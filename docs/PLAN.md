@@ -1,0 +1,476 @@
+# tranche-lang plan
+
+tranche-lang is a Cubical TT language for one job: off-chain ownership
+interests. A measure of units on attested identities gives each holder a
+pro-rata claim on the rent and sale inflows of an asset. The holdings are
+encrypted (FHE), each transfer carries a proof (ZK), and each opening needs
+a threshold of the committee (MPC). A threshold polity governs the rules
+(the restriction, the waterfall, the issuers, the polity itself) off chain,
+and it can amend its own rules. No checked program has a run-time error.
+
+The design is `design/DESIGN.md`: the request, verbatim, the S0 answers,
+the interest-lang domain design, verbatim, and the orbit-lang domain
+design, verbatim. This file gives the readings of that request, the route,
+the slices and the open questions. Section 12 lists the questions for the
+USER. A reading that is not ruled stays a recommendation.
+
+The name: interest-lang DESIGN.md:110 (fe3f47b) reads an ERC-1400 token as
+a coproduct of measures, "tranches are summands, not a second algebra".
+
+Status: S0 DONE (seed). Next: S1 (the USER rules the section 12
+questions).
+
+## 1. Rulings
+
+| Date | Ruling | Source |
+|---|---|---|
+| 2026-11-01 | Targets: Wasm MVP (tcc-wasm kit), ES module + JSON (tcc-js kit), WGSL compute (tcc-webgpu kit). Wasm is the primary target. The gate runs it first, and the differential tests compare it with `langc eval`. | DESIGN.md, S0 answers |
+| 2026-11-01 | Name: tranche-lang. | DESIGN.md, S0 answers |
+| 2026-11-01 | Host: TinyCC. The request asks for "an MCP server written in TinyCC", so all of `langc` is C99 that TinyCC builds, `langc mcp` too. | DESIGN.md, request |
+
+The seed is `bin/new-lang.sh tranche-lang tcc-wasm` from lang-template
+5265a2a. Native code and EVM are not targets. EVM goes because the request
+asks for an off-chain version of interest-lang.
+
+## 2. The reading of R0: no run-time error, period
+
+R0: "the language should not allow any runtime errors, period."
+
+This is wider than the accrue-lang R0 (no trap, N1 to N5,
+`REFUSE_PARTIAL`, `test/notraptool.c`). The reading: a checked program
+gets to a value on each input, on each target. Three things make this
+true. Each operation is total. The resources of each run have a static
+bound. Each failure that the domain knows is a typed value. A program that
+cannot meet R0 is refused at check time, with a fix hint.
+
+| Rule | Statement | Where |
+|---|---|---|
+| N1 | Each partial operation has an `Option` or `Except Fail` result, or a refinement argument. `natSub`, `u256Sub`, `u256Add`, `u256Mul` give `none` on an underflow or an overflow (the accrue-lang S3 rulings). Division takes a `NonZero` divisor. `mulDiv a b d` = `floor(a * b / d)` with a 512-bit product. | kernel types, eval, each writer |
+| N2 | No recursion at run time, no run-time closure, no run-time tree fold (the kit HOST-LIMITs). So the stack depth has a static bound. | kit, `REFUSE_REC` |
+| N3 | Each run-time list has a capacity that the program fixes (Q-S0-9). An operation that would pass the capacity gives `full`. Memory is static: no `memory.grow`, so each party runs in the same memory and gets the same result. | lowering, Wasm writer |
+| N4 | The writers emit no trap form. Wasm: no `unreachable`, each `div` and `rem` has a divisor that the type proves is not zero, each load and store is inside the static memory. ES: no `throw`, no BigInt division by zero. WGSL: no division by zero. | writers, `test/notrap/` |
+| N5 | `langc eval` never aborts on a checked program. A `Nat` above 2^64 - 1 has an `Option` form or the program is refused at check time (cairn-lang S8 shows this kit trap). | eval |
+| N6 | Each failure that the domain knows is a value of the closed sum `Fail`: `badProof`, `badSig`, `badAttest`, `refusedPair`, `overCap`, `noQuorum`, `dropped`, `outOfRange`, `full`, `overflow`, `replay`. A failed verification, a missing quorum and a dropped MPC party are values, not stops. | prelude, Part H, Part G |
+| N7 | Exponential ElGamal decryption is total only in a static range. `decryptIn : Ct -> Except Fail Units` searches `[0, 2^B)` with a fixed number of steps (baby step, giant step, a static table). A plaintext outside the range gives `outOfRange`. No decryption loops until it finds a value. Q-S0-4 picks `B`. | Part H, eval, each writer |
+| N8 | Static bounds. The checker gives each entry point an upper bound on its operations, its stack depth and its memory, from the IR: no loop, and each fold is over a list with a capacity. `langc check --json` reports the three bounds. A program with no bound is refused. | checker, `check --json` |
+
+`Except Fail A` is a cell monad (section 3): one generator `eta`, one cell
+`fail : Fail -> T A` with closed base data. `Option A` is `Except Unit A`.
+So N6 adds no new kind of type constructor. The kernel words that return
+`Option` now stay as they are; the new domain words return `Except Fail`
+(O9).
+
+Refusal codes: `REFUSE_PARTIAL` (from accrue-lang: a partial kit word
+without its total form; the fix hint names the total form) and
+`REFUSE_UNBOUNDED` (N8: no static bound; the fix hint names the list that
+needs a capacity).
+
+Gate for R0: a C tool `test/notraptool.c` reads each built module and
+fails on each trap opcode and each unguarded `div` or `rem` (Wasm), and on
+each `throw` (ES). Each target runs the edge rows (zero divisor, 2^256 - 1,
+a full list, an empty list, a plaintext at `2^B - 1` and at `2^B`, a
+quorum of `t - 1`, one dropped party) and must give the eval value. The
+Wasm runs also report the stack depth and the memory used, and the gate
+fails when a value is above the N8 bound.
+
+## 3. The reading of R1
+
+R1: "for type constructors/higher-kinded types, admit only cell monads and
+their duals as representated computationally in a Cubical Type Theory."
+
+cairn-lang and accrue-lang have the same R1 and the same reading, from
+intent-lang. tranche-lang takes it without change:
+
+- The ambient structure is not limited: Pi, Sigma, `Path`, `PathP`, the
+  interval `I`, `transp`, `hcomp`, the universe `U`, `Glue` and `ua`.
+- A declared type constructor must be one of two classes:
+  - CM, cell monad: the free algebra monad of a cell signature. The
+    parameter occurs only in the generator `eta : A -> T A`. Each other
+    cell takes closed base data and arguments of type `T A`. Unit is `eta`,
+    bind is the recursor, and the laws are paths by induction.
+  - CC, cocell comonad: the cofree coalgebra comonad of a cocell
+    signature. One observation `eps : D A -> A`, each other field `D A ->
+    D A` or `D A -> E -> D A`. Counit is `eps`, extend is the corecursor.
+- `REFUSE_CELL` refuses each other parameterized declaration. The cons
+  list is refused. The free monoid `FreeMon` is the admitted list.
+
+tranche-lang uses the duality in two places:
+
+- The ledger is a CM (`FreeMon Entry`, a SHA-256 hash chain, cairn-lang
+  Part R). The measure `mu` and the treasury are its fold.
+- The state at a position is its dual: the cofree comonad of `Entry -> -`
+  (a CC), with `eps` = the state now and `step` = the state after the next
+  entry. The pairing of the two runs the ledger on a state. Law L7 (a
+  claim travels with the units) is a path about this pairing.
+
+`Enc` (the sealed identity CM), `Except Fail` (N6) and the `squash` cell
+of `ZKProof` (4.5) are CMs too.
+
+## 4. The minimal base signature (R2)
+
+R2: admit the minimum to express interest-lang "as an off-chain ZK+FHE+MPC
+version governed by a ZK+FHE+MPC off-chain threshold-authorized,
+self-amending system with a base like" orbit-lang.
+
+Each name has one of three kinds, as in cairn-lang and accrue-lang:
+
+| Kind | Meaning |
+|---|---|
+| slot | The program gives the type from formers and kit base data. |
+| defined | The prelude defines it from slots, formers and kit base data. |
+| primitive | Opaque. The kit implements it. Only the listed operations use it. |
+
+Kit base data (all of it, O1): `Scalar` (the field of the group order),
+`Point` (the group), `Digest` (32 bytes), `U256` (asset amounts). `Nat`
+stays internal to the kernel. There is no `Addr`, `msg.sender`, ERC-20
+`token`, block or clock: those are chain data.
+
+interest-lang gives the meaning (DESIGN.md:56, fe3f47b): `Sigma (L :
+Aggregation act F). InterestState`, with `InterestState = (mu, W, R,
+treasury)`. Parts I, H and P give `InterestState`. Part G gives `L`.
+
+### 4.1 Part I: identities and the restriction
+
+| Name | Kind | Reading |
+|---|---|---|
+| Claims | defined | `(juris : Juris, status : Status)`, two closed sums that the program declares. interest-lang DESIGN.md:39: "jurisdiction, investor status, and (only at the representation layer) a wallet set". The wallet set is not here. |
+| Identity | defined | `(key : Point, claims : Claims, att : Attest)`. `att` is a Schnorr signature on `(key, claims)` by an issuer key in `issuers` (4.3). Q-S0-5. |
+| attested | defined | `Constitution -> Identity -> Verdict`. A bad signature or an issuer outside the set gives `badAttest`. |
+| R | slot | `Claims -> Claims -> Option Units`, a total program definition. `none` refuses the pair (`refusedPair`). `some cap` admits the pair with a bound: the transfer proof shows `q <= cap` (`overCap`). interest-lang DESIGN.md:50-53: R "depends only on identity claims" and is "the image of securities compliance inside the model". Q-S0-5. |
+
+interest-lang DESIGN.md:111 reads ERC-3643: "R reads claim topics from
+trusted issuers", and `canTransfer` decides R. Here `R` with `attested` is
+that decision. DESIGN.md:113: "The trusted-issuer set is part of the
+constitution and is amendable only through Gov".
+
+### 4.2 Part H: the encrypted holdings and the transfer
+
+| Name | Kind | Reading |
+|---|---|---|
+| Units | defined | `Nat` below `2^B` (N7, Q-S0-4). The measure is in units, not in `Q>=0`: interest-lang DESIGN.md:36 has `mu : Identity -> Q>=0`, and an integer unit is its representation. |
+| Ct | primitive | An exponential ElGamal ciphertext on secp256k1 (cairn-lang `src/front/elgamal.c`). `add`, `sub` and `scale` by a public `Scalar` are the homomorphic operations. |
+| Holding | defined | `(id : Identity, own : Ct, pub : Ct)`. `own` is `mu(h)` under `key id`; `pub` is `mu(h)` under `keyOpen`. Q-S0-3. |
+| Measure | defined | `FreeMon Holding` with the capacity `maxHolders` (N3), and `supply : Units` in public. `supply` changes only by an issue entry that the polity authorizes. |
+| decryptIn | defined | N7. The holder runs it on `own` with its secret key. The committee runs it on `pub` only through `open` (4.3). |
+| TransferProof | defined | One `ZKProof` (4.5) that is a Sigma composition of the cairn-lang proofs (`src/front/sigma.c`): (1) the ciphertexts of `q` under `key h`, `key k` and `keyOpen` share one plaintext (DLEQ); (2) `q` is in `[0, 2^B)` (one disjunctive Chaum-Pedersen bit proof for each bit); (3) `mu(h) - q` is in `[0, 2^B)` (the same bit proofs on a fresh ciphertext, and a proof with the secret key of `h` that it equals `own h - q`); (4) `q <= cap` when `R` gives `some cap` (the same bit proofs on `cap - q`). |
+| Transfer | defined | `(from, to : Identity, q : three Ct, proof : TransferProof, sig)`. `sig` is a Schnorr signature of `key from` on the digest. |
+| transfer | defined | `Constitution -> Measure -> Transfer -> Except Fail Measure`. interest-lang DESIGN.md:65: tau(h, k, q) "is defined iff R(h, k, q) and q <= mu(h)", and then it subtracts `q` from `h` and adds `q` to `k`. Here: `attested` for both, `R` of their claims, the proof, the signature, then `own h - q`, `pub h - q`, `own k + q`, `pub k + q` by the homomorphic operations. Each check that fails gives its `Fail` value. |
+
+Conservation holds by the group law: the same ciphertext of `q` leaves
+`pub h` and enters `pub k`, so the sum of the `pub` ciphertexts does not
+change (L2). No proof is needed for it.
+
+A transfer enters the ledger only with a FROST threshold Schnorr
+signature of the append committee under `keyAppend` on `(head r, e)` (the
+cairn-lang `Auth`, `src/front/frost.c`). The ledger refuses a second entry
+with the same digest (`replay`).
+
+ERC-1644 forced recovery (DESIGN.md:65) is not a holder transfer. It is an
+entry that only `Gov` can authorize, and it does not quotient through the
+voter orbit. It waits for a slice (O7).
+
+### 4.3 Part G: the polity (orbit-lang and cairn-lang)
+
+| Name | Kind | Reading |
+|---|---|---|
+| Member | defined | `Point`: one public key. Members vote. Holders do not vote by their units (Q-S0-7). |
+| Constitution | defined record | The cairn-lang `Polity` (cairn-lang docs/PLAN.md:170, 60768e8) plus `issuers : FreeMon Point`, `keyPay`, `tPay`, `rule` (the position of the choice rule in force in the program list `rules`), and the policy in force. The keys come from the DKG; there is no trusted dealer. |
+| D | defined | `Nat` below `decisions`. `policyOf : D -> Prod R W` is a total program definition. The objects of `F` "include the admissible (R, W)" (interest-lang DESIGN.md:59). |
+| PolicyBallot | defined | One-hot over `D`: `decisions` exponential ElGamal ciphertexts under `keyOpen`, a disjunctive Chaum-Pedersen proof that each one is 0 or 1, a proof that their sum is 1, and a bLSAG ring signature over `members` (cairn-lang `src/front/blsag.c`). The key image of the bLSAG is the nullifier: one ballot for each member (orbit-lang law 5, DESIGN.md:112). |
+| Tally | defined | `FreeMon Units` of length `decisions`, the opened homomorphic sum. This is the orbit quotient: the counts, never who voted what (orbit-lang DESIGN.md:29). |
+| choice | slot | `Tally -> Option D`, a program definition. The compiler makes its table over each tally. |
+| Gov, GovPi | defined | `Gov` = the table of the rule in force; `GovPi = map policyOf . Gov`. orbit-lang DESIGN.md:35: `Gov L := orbitProjection act >>> L.functor`. |
+| AmendBallot | defined | The cairn-lang ballot: `Enc Bool` with its proof and its bLSAG, on a whole new `Constitution`. `decide` = `yes >= tAmend`. |
+| Fate | defined | `impossible | debreu D | ising D D`: orbit-lang law 6 (DESIGN.md:117), `Empty + (unique L) + (L0 x L1)`. `fateOf : Tally -> Fate` reads the table of `choice`. |
+| IsSelfConstituting | defined | orbit-lang DESIGN.md:91: `Sigma (L : Aggregation), Path Constitution (gov L) F`. A program gives the witness as a path; the kernel checks it (L13). |
+| Share, open | primitive | Partial decryption with a DLEQ proof; `tOpen` valid shares combined by Lagrange (MPC, cairn-lang `src/front/threshold.c`). `open` gives `noQuorum` below `tOpen` valid shares, and it names each dropped party in its result (N6). |
+| Deal, Reshare | primitive | cairn-lang `src/front/dkg.c`: Pedersen DKG with Feldman commitments, and reshare when `members` or a threshold changes. |
+
+Self-reference: an amendment is a whole `Constitution`, so the polity can
+amend `tAmend`, `issuers` and `rule`. Each ballot is decided by the
+constitution in force when it opens. A chain of amendments is a fold over
+`FreeMon Constitution` (the cairn-lang `amendAll`). interest-lang
+DESIGN.md:81: amendment "does not move mu or the treasury" (L8).
+DESIGN.md:83: compliance labels and voter anonymity are different actions,
+so a ballot never carries the claims of an identity.
+
+### 4.4 Part P: distribution and payment
+
+| Name | Kind | Reading |
+|---|---|---|
+| Kind | defined | `rent | sale`. |
+| W | slot | `Kind -> U256 -> U256` from the policy in force, with `W k a <= a` (a law on the slot). interest-lang DESIGN.md:47: W "selects which inflow is distributable". |
+| Inflow | defined | `(kind : Kind, amount : U256)`, a ledger entry that the polity authorizes. |
+| claim | defined | `claim m A = mulDiv m A supply` when `supply > 0`, else `0` (interest-lang DESIGN.md:42, in integer units). |
+| distribute | defined | `Fate -> Measure -> Inflow -> Except Fail (Prod Payout U256)`. Under `impossible` it gives no payout, and the inflow stays in the treasury (DESIGN.md:73: "funds stay in the treasury, neither burned nor silently paid"). Under `debreu d` it opens each `pub h` by threshold decryption (`open`, then N7 in the range), pays `claim mu(h) A` for `A = W k a`, and keeps the residual. |
+| Instruction | defined | `(payee : Point, asset : Digest, amount : U256, pos : OpPos)`: the output of `distribute`. |
+| PayAuth, paySnoc | defined | The accrue-lang S7 form, ported: `family PayAuth := payAuthOf (payR : U256) (payZ : U256)`, `payOk` checks `schnorrOk` under `keyPay` on `(ixHead log, ixDigest p)`, and `paySnoc` adds an entry only with a valid `PayAuth` and a digest that is not in the log (accrue-lang domain/domain.lang:606-613, d1017f1). |
+| Treasury | defined | The fold of the ledger: each inflow adds `a`, each payout takes its claims. It keeps `a - W k a` and the distribution residual. |
+
+The sum law with integer units. interest-lang DESIGN.md:70 states
+`Sum_h claim(h, W(kind)(a)) = W(kind)(a)` over `Q>=0`. With integer units
+each `claim` is a floor, so the law is:
+
+`Sum_h claim mu(h) A + res A = A`, with `0 <= res A < n`,
+
+where `n` is the number of holders with `mu(h) > 0` (each floor loses less
+than one unit). `res A` goes to the treasury (L6). accrue-lang has the
+same shape for a settlement: it pays a residual (`withdrawableAt` =
+recognized minus withdrawn, domain/domain.lang:476-478, d1017f1) and
+reads what was paid from the record (`settledIn`, domain/domain.lang:614-623;
+`escSettleR`, :638), so a replay pays zero.
+
+The protocol holds no money (Q-S0-6). A rail outside the language pays
+each `Instruction` that has a valid `PayAuth`.
+
+Privacy at a distribution: `distribute` opens each `mu(h)` to the
+committee, and the rail sees each claim. Between distributions, `mu(h)`
+and each `q` stay encrypted. The payment amount tells the rail about
+`mu(h)` in any design with a plain rail, so this is the minimum (O8).
+
+### 4.5 Enc, ZK and MPC
+
+The readings of cairn-lang PLAN 3.3 hold: `Enc` is the identity cell monad
+behind a sealed eliminator, `bind` is homomorphic evaluation (affine maps
+only, for exponential ElGamal), `decrypt` is a law-only monad morphism
+`Enc -> Id`, `open q c = decrypt c` is the MPC law, and `ZKProof W := || W
+||` (the `squash` cell) is zero knowledge. IND-CPA and proof soundness are
+VALIDATION assumptions. tranche-lang adds N7: the `decrypt` of the law is
+`decryptIn` in the range, and the law holds for each plaintext below
+`2^B` (L17).
+
+orbit-lang law 5 (DESIGN.md:107-110) asks for a Glue equivalence
+`Ballot_priv ~ Choice x ZKWitness` with a path that is constant on the
+private data. The reading: the `squash` cell gives it. Each map out of
+`|| W ||` into a set is constant, so a verified witness gives no private
+data.
+
+## 5. Time and the three fates
+
+Time: interest-lang has no clock. A distribution, a transfer and an
+amendment are ledger entries with positions. The reading (Q-S0-2 (a)):
+keep the cairn-lang S3 result, `REFUSE_TIME` and `OpPos` (cairn-lang
+docs/PLAN.md:247, 60768e8). Each program reads order only as an `OpPos`.
+
+The three fates (interest-lang DESIGN.md:99-103, orbit-lang law 6):
+
+- `impossible`: no choice for the tally. `distribute` gives no payout; the
+  inflow stays in the treasury; the claims stay as a measure. The verdict
+  words give `none`. `IsSelfConstituting` has no witness (orbit-lang
+  DESIGN.md:122).
+- `debreu d`: one choice; `GovPi` gives the policy `policyOf d`.
+- `ising d0 d1`: two choices that are equally legitimate. interest-lang
+  DESIGN.md:103 says this is "a fork of aggregation objects, not by itself
+  a fork of IsSelfConstituting". The reading (Q-S0-8 (a)):
+  `REFUSE_BIFURCATION`, as accrue-lang and retainer-lang: the compiler
+  makes the choice table and refuses a rule with a tie row that has no
+  tie-break. So a checked program gets only `impossible` or `debreu`.
+
+interest-lang DESIGN.md:93-95: for the constant constitution the witness
+is constructive through `zeroPhaseAggregation`, and it is single-valued.
+tranche-lang gives that witness as a guest path (L13).
+
+## 6. Laws
+
+Each law is a path that the kernel checks. "VALIDATION" marks a
+computational assumption that no path can prove (docs/VALIDATION.md).
+
+| Law | Statement |
+|---|---|
+| L1 zero | `transfer` with `q = 0` leaves the plaintext measure unchanged (DESIGN.md:65) |
+| L2 conservation | the sum of the `pub` ciphertexts is the same after a transfer; `supply` is the same |
+| L3 chains | two admissible transfers in sequence give the same measure as their composite, when it is admissible |
+| L4 disjoint | two transfers on disjoint identities commute |
+| L5 R gate | `transfer` is `some` only when both are `attested` and `R` admits the pair; a success while R fails is a leak (DESIGN.md:65) |
+| L6 sum with residual | `Sum_h claim mu(h) A + res A = A` and `res A < n` (4.4) |
+| L7 claims travel | a transfer, then `distribute`, gives the same payout as `distribute` on the image measure (DESIGN.md:73) |
+| L8 amend | an amendment leaves `mu` and the treasury (DESIGN.md:81) |
+| L9 tally | `open q (tallyEnc bs) = count (map decrypt bs)`, for each slot of `D` |
+| L10 MPC | `open q c = decrypt c` |
+| L11 orbit | the tally of a relabeled ballot profile is the same tally (orbit-lang law 1, DESIGN.md:75-80) |
+| L12 legitimacy | `aggregate` factors through the orbit quotient, with the unit path (orbit-lang law 2, DESIGN.md:82-87) |
+| L13 self-constituting | `GovPi = policyOf . choice` at a constant constitution; the path `gov (aggregate F) = F` (orbit-lang law 3, DESIGN.md:89-94) |
+| L14 amend fold | `amend (ps ++ qs) = amend qs . amend ps`, and `amend = Gov` (orbit-lang law 4, DESIGN.md:96-100) |
+| L15 one ballot | the ledger refuses a second ballot with the same key image (orbit-lang law 5, DESIGN.md:112) |
+| L16 fates | `impossible` gives no payout and keeps the treasury; no `IsSelfConstituting` witness at `impossible` (orbit-lang law 6, DESIGN.md:122) |
+| L17 range | `decryptIn (enc m) = m` for `m < 2^B`, and `outOfRange` for `m >= 2^B` (N7) |
+| V1 to V6 | VALIDATION: collision resistance of SHA-256; IND-CPA of ElGamal (DDH); soundness and zero knowledge of the Sigma proofs, DLEQ and bLSAG in the ROM; unforgeability of FROST and Schnorr; the honesty of `tOpen` members (they open only a tally or a distribution); the issuers attest true claims |
+
+## 7. Route
+
+### 7.1 The cairn-lang port
+
+cairn-lang is the governance half. It has the same kit (tcc-wasm) and the
+same lang-template (5265a2a) as this seed: its seed is e222eba, and its
+newest USER commit is 60768e8 (S13). So the port is a diff, not a copy:
+S2 applies `git -C cairn-lang diff e222eba 60768e8` to this seed with the
+name changed (13 commits, cairn-lang S1 to S13; 472 files, 30752
+insertions, 1139 deletions, counted 2026-11-01), then runs `make -B check`, because a
+patch sets new mtimes only on the files it touches. Survey first: SAME,
+CHANGED, CAIRN-ONLY.
+
+The port brings: the Cubical TT checker and evaluator, `REFUSE_CELL`,
+`FreeMon`, `Enc`, `group.h` on secp256k1, SHA-256, the Sigma, ElGamal,
+DLEQ, threshold, bLSAG, FROST and DKG code, Part D and Part R, the Wasm,
+ES and WGSL writers (cairn-lang S8 to S10), `langc fmt` (S11), `langc
+check --json` (S12), `langc mcp` and `langc explain` (S13). Keep
+`REFUSE_TIME` and `OpPos` (Q-S0-2 (a)). Do not take `.kanon-exec/`,
+`.kanon-wait/`, `.kanon-replies/`, `skills/` or `examples/skill/` (they
+are not tracked in cairn-lang).
+
+The cairn-lang domain (`domain/domain.lang`) stays as the governance
+part. S4 to S7 add Parts I, H, P and the new Part G words to it as guest
+code.
+
+### 7.2 The three targets
+
+One front end (the ported kernel) and three writers that read its output:
+
+| Target | Source | Crypto at run time | Use |
+|---|---|---|---|
+| Wasm MVP (primary) | cairn-lang `src/wasm.c` and `src/front/lower.c` (S8) | the cairn-lang Wasm prelude (i64 limbs, point add and multiply, SHA-256), plus the N7 table | each party: holders, issuers, members, the open, append and pay committees |
+| ES module + JSON | cairn-lang `src/js.c` (S9, 6b73467: "Write ES modules and the JSON ABI from the IR") | BigInt in a JS prelude | public checks of the ledger and of the proofs. JS is not constant time, so a program that touches a secret key, a key share or a nonce is refused here (`REFUSE_TARGET_SECRET`, cairn-lang S9). |
+| WGSL compute | cairn-lang `src/wgsl.c` (S10) | u32 limbs | batch work: check many transfer proofs and ballot proofs, the claims of many holders |
+
+Differential tests: each target runs the same vectors as `langc eval`.
+The kit harnesses stay. No new node, Python or shell harness: new tests
+are guest `.lang` files and C tools.
+
+## 8. Agent adoption (A1 to A6)
+
+The request asks for six items so that agents reach for tranche-lang when
+it fits. cairn-lang built the same six items. The port (S2) brings A1, A2
+and A4. Later slices extend them to the new words and codes.
+
+| Item | Deliverable | Gate | cairn-lang slice |
+|---|---|---|---|
+| A1 | One canonical form for each operation: no aliases, no second syntax. `langc fmt FILE` prints the canonical form. `langc fmt --check` exits 1 when a file is not canonical. | `fmt` is idempotent; `parse (fmt x)` has the same core term as `x`; each example and test file is canonical. | S11, 3717b81 (ported at S2) |
+| A2 | `langc check --json FILE`: one JSON object with `diagnostics` (code, span, message, `fix`: a concrete edit) and `progress` (`parsed`, `typed`, `laws_discharged`, `laws_total`), plus the N8 bounds. Schema in `docs/CHECK-JSON.md`. | Rows in `test/json/` with the expected JSON, byte equal. Each refusal code has a `fix` row. | S12, 98d18ef (ported at S2) |
+| A3 | `SKILL.md` with five graded examples (G1 to G5). Each example is a file in `examples/skill/`, and SKILL.md quotes it. | The gate checks each example and checks that the SKILL.md block and the file are byte equal. | S14, not committed (in progress at 60768e8) |
+| A4 | `langc mcp`: an MCP server over stdio (JSON-RPC 2.0, one message on each line), in C, built by TinyCC into the same `langc`. Tools: `check`, `fmt`, `eval`, `build` (with a target), `explain` (a refusal code). The MCP spec version is pinned in `docs/MCP.md`. | A C tool `test/mcptool.c` sends `test/mcp/*.in` and compares the replies with `*.out`. | S13, 60768e8 (ported at S2) |
+| A5 | `AGENTS.md` (how an agent works in this repo, with the gate command) and a README table: when to use tranche-lang, when not to use it, and what to use then. | Review only. | S14, not committed |
+| A6 | Token counts: G1 to G5 in tranche-lang, Python and Rust. Report `docs/TOKEN-BASELINE.md` with the tokenizer pin, each count and each file hash (Q-S0-10). | `make tokens`, not in `make check`. | S15, not started |
+
+Graded examples:
+
+| Grade | Example | Uses |
+|---|---|---|
+| G1 | One property, one holder (`supply = 1`, a Dirac measure): one rent inflow, the whole claim to that identity | Part I, Part P, one pay key, threshold 1 (interest-lang DESIGN.md:109) |
+| G2 | A confidential transfer between two attested identities, with `R` that admits the pair with a cap | `transfer`, `TransferProof`, L2, L5 |
+| G3 | A rent distribution over three holders, with a residual to the treasury | `open`, `decryptIn`, `claim`, L6, PayAuth |
+| G4 | An encrypted policy vote that turns on the distribution of sale proceeds | PolicyBallot, tally, `choice`, `GovPi`, L8, L11 |
+| G5 | No decision: the inflow stays in the treasury; then the polity amends `tAmend` and `issuers` | `impossible`, L16, `amend` as a fold, L14 |
+
+## 9. Tests
+
+The kit layout stays: `test/parse`, `test/check`, `test/eval`, `test/ir`,
+`test/fronttool.c`, `test/gate.sh`. The port adds the cairn-lang tools
+(SHA-256, secp256k1, ElGamal, threshold, Sigma, bLSAG, FROST, DKG, fmt,
+json, mcp) and their rows. New: `test/notrap/` and `test/notraptool.c`
+(R0, N4), the N8 bound rows, the range rows (N7), the transfer proof rows
+(valid, and one row for each `Fail` value of `transfer`), the distribution
+rows (L6, L7, L16). Mutation: each slice that adds a refusal or a law
+kills at least one mutant of it.
+
+## 10. Slices
+
+| Slice | Work | Status |
+|---|---|---|
+| S0 | Seed from tcc-wasm, DESIGN.md verbatim, this plan; gate; seed commit; private repo | DONE |
+| S1 | The USER rules section 12. Record the rulings here. | NEXT |
+| S2 | Port the cairn-lang diff e222eba..60768e8 (7.1). Survey first: SAME, CHANGED, CAIRN-ONLY. | |
+| S3 | R0: N1, N5 to N8 in the kernel and eval; `Except Fail`; `REFUSE_PARTIAL`, `REFUSE_UNBOUNDED`; checked `U256`, `mulDiv`. | |
+| S4 | Part I: Claims, Identity, `attested`, `issuers`, the slot `R`; L5. | |
+| S5 | Part H: Units, `decryptIn`, Holding, Measure, TransferProof, `transfer`; L1 to L4, L17. | |
+| S6 | Part G: PolicyBallot over `D`, Tally, `choice`, `Gov`, `GovPi`, Fate, `REFUSE_BIFURCATION`, IsSelfConstituting; L9 to L16. | |
+| S7 | Part P: W, Inflow, `claim`, `distribute`, Instruction, PayAuth (from accrue-lang), Treasury; L6 to L8. | |
+| S8 | Targets: lowering of the new words on Wasm, ES and WGSL; N4, `test/notraptool.c`, the N8 measure; differential vectors. | |
+| S9 | A1, A2, A4 for the new words and codes: canonical forms, `fix` rows, `explain` rows. | |
+| S10 | A3 and A5: SKILL.md, G1 to G5, AGENTS.md, the README table (after the cairn-lang S14 USER commit). | |
+| S11 | A6: the token comparison. | |
+| S12 | Close: SPEC.md, probe/CAPABILITY.md, VALIDATION.md, final gate. | |
+
+## 11. Open items
+
+- O1 The kit base data is `Scalar`, `Point`, `Digest`, `U256`. If a slice
+  needs more, it records why here first.
+- O2 cairn-lang is in its S14 (SKILL.md, not committed). S2 ports
+  60768e8 only. S10 takes the cairn-lang S14 form only after its USER
+  commit.
+- O3 The coproduct of tranches (interest-lang DESIGN.md:110: "coproduct
+  of measures, one R per partition") waits for a slice after S7. S5
+  builds one partition.
+- O4 The secret marks for `REFUSE_TARGET_SECRET`: the secret key of a
+  holder, the key shares and the nonces. S5 marks the holder key in the
+  types.
+- O5 The test vectors come from the published standards (NIST CAVP for
+  SHA-256, SEC 2 for secp256k1, the FROST RFC 9591 vectors), not from an
+  implementation that the gate would trust.
+- O6 The issue of new units (`supply` changes) is a ledger entry that
+  only `Gov` authorizes. Its proof (the new `pub` ciphertext opens to the
+  issued amount) is S5 work.
+- O7 ERC-1644 forced recovery (DESIGN.md:65) is out of S5. It needs a
+  `Gov` authorization path that does not pass through the voter orbit.
+- O8 Privacy at a distribution (4.4): the committee sees each `mu(h)`
+  at the open. A design that pays claims as encrypted internal balances
+  is Q-S0-6 (b).
+- O9 The kernel words that return `Option` stay. S3 decides which new
+  words return `Except Fail`, and `check --json` shows the `Fail` value of
+  each edge row.
+
+## 12. Questions for the USER (S0)
+
+Each question has a recommendation (rec). S1 records the rulings.
+
+- Q-S0-1 Crypto. (a) rec: keep the cairn-lang rulings: secp256k1,
+  SHA-256, exponential ElGamal, FROST, Pedersen DKG with Feldman
+  commitments. They come with the S2 port. (b) Pick again for
+  tranche-lang.
+- Q-S0-2 Time. (a) rec: no time, as cairn-lang: keep `REFUSE_TIME` and
+  `OpPos`; order is the ledger position (section 5). interest-lang has no
+  clock. (b) A stamp chain signed by a threshold, as accrue-lang: only
+  needed for dated rules (a lockup until a date).
+- Q-S0-3 Where `mu(h)` is encrypted. (a) rec: two ciphertexts for each
+  holding (4.2): `own` under the holder key, so the holder can decrypt and
+  prove `q <= mu(h)`, and `pub` under `keyOpen`, so the committee can open
+  claims at a distribution; one DLEQ proof ties them. (b) `pub` only; the
+  committee checks `q <= mu(h)` by an MPC comparison on shares: no holder
+  key, but more MPC rounds and much more code. (c) Plain `mu(h)`; only the
+  ballots are encrypted (as accrue-lang Q-S0-3 (a)).
+- Q-S0-4 The static range `B` (N7). (a) rec: `B = 32`: `supply` below
+  2^32 units, a table of 2^16 steps, 32 bit proofs for each range proof.
+  (b) `B = 40`: more units, a table of 2^20 steps, about 16 times the
+  table memory. (c) `B = 24`: a small table, but at most 2^24 units.
+- Q-S0-5 Identities and R. (a) rec: the claims are public and signed by
+  an issuer in `issuers`; `R` is a total program on two `Claims` that
+  gives `none` or a cap, and the transfer proof shows `q <= cap` (4.1).
+  (b) `R` reads only the claims and has no cap: less proof, no holding
+  limit. (c) Private claims with a ZK proof of an issuer signature: more
+  privacy, much more proof code.
+- Q-S0-6 Payment. (a) rec: the protocol holds no money; each claim is an
+  `Instruction` with a threshold `PayAuth` on the ledger (the accrue-lang
+  S7 form), and a rail outside the language pays it. (b) Encrypted
+  internal claim balances: the committee does not see `mu(h)`, but each
+  withdrawal needs a range proof and the rail still sees the amount.
+- Q-S0-7 Who votes. (a) rec: the members of the constitution, one ballot
+  each, under a bLSAG ring (cairn-lang). The tally is a sum, so orbit-lang
+  law 1 holds for each permutation of members. (b) Holders, with weight
+  `mu(h)`: the weight breaks the symmetry of law 1 (interest-lang
+  DESIGN.md:83 keeps labels and anonymity apart), and exponential ElGamal
+  cannot multiply a vote by an encrypted weight.
+- Q-S0-8 Ballots and ties. (a) rec: as accrue-lang: a one-hot
+  PolicyBallot over `D` for `(R, W)`, an AmendBallot on a whole new
+  constitution, and `REFUSE_BIFURCATION` for a choice rule that has a tie
+  row with no tie-break (section 5). (b) AmendBallot only, as cairn-lang: `(R, W)`
+  changes only with a whole new constitution. (c) As (a), but a tie keeps
+  the policy in force and is not refused.
+- Q-S0-9 Run-time capacity (N3). (a) rec: each run-time list has a
+  capacity in the program (for example `maxHolders := 64`), and static
+  memory. Each party gets the same result. (b) `memory.grow` with a
+  `full` path: no capacity to pick, but two parties with different memory
+  limits can get different results.
+- Q-S0-10 Token comparison (A6). (a) rec: take the cairn-lang rulings:
+  the Anthropic `count_tokens` endpoint for the newest Claude model (model
+  id and date in the report), and the Python and Rust programs run with
+  outputs equal to the tranche-lang output. (b) A pinned offline
+  tokenizer, text only.
