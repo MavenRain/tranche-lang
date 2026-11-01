@@ -20,7 +20,8 @@ on 2026-10-08 on AArch64 Darwin.
 - `src/wasm.c` writes the Wasm binary format directly: the type,
   function, memory, global, export and code sections, with LEB128
   numbers. It needs no library. The gate validates each module with
-  `wasm-validate` and `wasm-objdump -x`, and runs it in node.
+  `wasm-validate` and `wasm-objdump -x`, and runs it with the Wasmtime C API
+  in `test/wasmtool.c`.
 
 ## Values
 
@@ -42,10 +43,17 @@ on 2026-10-08 on AArch64 Darwin.
   b <= floor((2^64 - 1) / a). For a = 0 the product is 0, and the test
   gives 0 for each b.
 - `SUB` is `select(a - b, 0, a >= b)`.
-- The differential grid holds the edge values (`test/grid.awk:8`). Node
-  and `langc eval` agree: `scale 4294967296 4294967296` is `trap`,
-  `scale 4294967295 4294967297` is 18446744073709551615, and
-  `addPrice 18446744073709551615 1` is `trap`.
+- The `wasm differential` gate line and `test/eval/expect.txt` hold the
+  edge value: `addPrice 18446744073709551615 1` is `trap` in Wasm and in
+  `langc eval`.
+- The C boundary grid (`test/entrytest.c`) preserves the old grid's 416
+  cases for the surviving Nat and Flag entries and adds 200 division and
+  remainder cases. All 616 rows compare independent C results with the
+  evaluator, Wasm and JS. `make gpu-check` also checks WGSL.
+- The same C runner recovers the generated Nat and Flag grids for the
+  other surviving example files and the lazy, spine and proof fixtures,
+  retaining the original small loop counts and comparing each target
+  with the evaluator.
 
 ## Limits
 
@@ -56,10 +64,10 @@ on 2026-10-08 on AArch64 Darwin.
 - The evaluator has a fuel of 20000000 steps (`src/front/core.h:17`).
   `langc eval examples/entries.lang square 4294967296` stops with
   `EVAL_FUEL` after 0.91 s user and 0.48 s system CPU time. For this
-  reason the differential grid uses values of 2^32 and more only for
-  entries with no loop.
+  reason the Wasm differential uses the bounded, fixed rows in
+  `test/eval/expect.txt`.
 - All memory of `langc` comes from one arena with a limit of 1 GiB
-  (`src/main.c:11`). A run that reaches it stops with `OOM`.
+  (`src/main.c:20`). A run that reaches it stops with `OOM`.
   `langc eval test/ir/spine.lang foldOnes 4294967296` stops with `OOM`.
 - The Wasm memory has a maximum of 16384 pages, which is 1 GiB
   (`src/wasm.c:27`). The allocator traps when `memory.grow` fails.

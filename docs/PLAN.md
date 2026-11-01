@@ -17,9 +17,11 @@ USER. A reading that is not ruled stays a recommendation.
 The name: interest-lang DESIGN.md:110 (fe3f47b) reads an ERC-1400 token as
 a coproduct of measures, "tranches are summands, not a second algebra".
 
-Status: S1 DONE: the USER rulings are in section 1 (Q-S0-5 (c),
-Q-S0-6 (b), Q-S0-8 (b), each other question (a)). Next: S2 (port the
-cairn-lang diff e222eba..60768e8).
+Status: S2 DONE: the cairn-lang diff e222eba..60768e8 is ported (470
+files; README.md and this file stay), with the name change on the 27
+self-name sites and the cairn-lang domain tags kept (S2-Q1 (a), O12).
+`make check` EXIT 0 with the 56 count lines of cairn-lang S13. Next: S3
+(R0).
 
 ## 1. Rulings
 
@@ -29,6 +31,7 @@ cairn-lang diff e222eba..60768e8).
 | 2026-11-01 | Name: tranche-lang. | DESIGN.md, S0 answers |
 | 2026-11-01 | Host: TinyCC. The request asks for "an MCP server written in TinyCC", so all of `langc` is C99 that TinyCC builds, `langc mcp` too. | DESIGN.md, request |
 | 2026-11-01 | S1, the section 12 questions. The USER answers, verbatim: "(a) Keep cairn (Recommended)", "(a) No time (Recommended)", "(a) own + pub (Recommended)", "(a) B = 32 (Recommended)", "(c) Private claims", "(b) Encrypted balances", "(a) Members (Recommended)", "(b) AmendBallot only", "(a) Static capacity (Recommended)", "(a) cairn rulings (Recommended)". So: Q-S0-1 (a), Q-S0-2 (a), Q-S0-3 (a), Q-S0-4 (a), Q-S0-5 (c), Q-S0-6 (b), Q-S0-7 (a), Q-S0-8 (b), Q-S0-9 (a), Q-S0-10 (a). Sections 2 to 11 read Q-S0-5 (c), Q-S0-6 (b) and Q-S0-8 (b). | USER, S1 (AskUserQuestion) |
+| 2026-11-01 | S2-Q1, the domain tags. The USER answer, verbatim: "(a) Keep cairn tags in S2 (Recommended)". The 7 hash tags of the port ("cairn", "cairn-genesis", "cairn-append", "cairn-out", "cairn-auth", "cairn-authw", "cairn-rho") and their comments stay, so the gate vectors equal cairn-lang S13 byte for byte (O12). | USER, S2 (AskUserQuestion) |
 
 The seed is `bin/new-lang.sh tranche-lang tcc-wasm` from lang-template
 5265a2a. Native code and EVM are not targets. EVM goes because the request
@@ -411,8 +414,8 @@ kills at least one mutant of it.
 |---|---|---|
 | S0 | Seed from tcc-wasm, DESIGN.md verbatim, this plan; gate; seed commit; private repo | DONE |
 | S1 | The USER rules section 12. Record the rulings here. | DONE: section 1 (Q-S0-5 (c), Q-S0-6 (b), Q-S0-8 (b), each other question (a)); sections 2 to 11 read them |
-| S2 | Port the cairn-lang diff e222eba..60768e8 (7.1). Survey first: SAME, CHANGED, CAIRN-ONLY. | NEXT |
-| S3 | R0: N1, N5 to N8 in the kernel and eval; `Except Fail`; `REFUSE_PARTIAL`, `REFUSE_UNBOUNDED`; checked `U256`, `mulDiv`. | |
+| S2 | Port the cairn-lang diff e222eba..60768e8 (7.1). Survey first: SAME, CHANGED, CAIRN-ONLY. | DONE: survey 52 SAME, 2 CHANGED (README.md and this file, kept), 418 CAIRN-ONLY; `git apply` of 470 files with no reject. The name change: 27 self-name sites (the MCP server name and tool texts, 9 `test/mcp` replies, 7 comments, the `REFUSE_NAME` fix `trancheHead`); 16 citations of cairn-lang slices and the 11 tag comments stay (S2-Q1 (a)). `make -B check` EXIT 0; the 56 count lines equal cairn-lang S13. |
+| S3 | R0: N1, N5 to N8 in the kernel and eval; `Except Fail`; `REFUSE_PARTIAL`, `REFUSE_UNBOUNDED`; checked `U256`, `mulDiv`. | NEXT |
 | S4 | Part I: Claims, ClaimCom, Identity with the issuer ring signature, `attested`, `issuers`, the slot `R` and its table; L5 (O10, O11). | |
 | S5 | Part H: Units, `decryptIn`, Holding, Measure, TransferProof with the R row proof, `transfer`; L1 to L4, L17. | |
 | S6 | Part G: `D`, `policyOf`, the `policy` of the constitution, the AmendBallot tally, `Gov` as `amendAll`, `GovPi`, Fate, IsSelfConstituting; L9 to L16. | |
@@ -474,6 +477,12 @@ kills at least one mutant of it.
   new attestation. The other form: a Schnorr signature by a named issuer
   on `(key, com)`. It keeps the claims private and revokes by issuer, but
   it shows the issuer. The USER rules it before S4.
+- O12 The domain tags of the port are the cairn-lang tags (S2-Q1 (a)):
+  the ASCII words "cairn", "cairn-genesis", "cairn-append", "cairn-out",
+  "cairn-auth", "cairn-authw" and "cairn-rho" as hex constants. A later
+  slice changes them to "tranche" words with new vectors, at the
+  earliest S4 (Part I adds its own tags). The MCP server version stays
+  "S13" (the cairn-lang slice) until S9 sets it.
 
 ## 12. Questions for the USER (S0)
 
