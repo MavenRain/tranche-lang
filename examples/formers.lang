@@ -7,13 +7,13 @@ def left : Nat := first both
 
 def right : Flag := second both
 
-def size : (n : Nat) -> Nat := fun (n : Nat) => natAdd n 1
+def size : (n : Nat) -> Option Nat := fun (n : Nat) => natAdd n 1
 
-def count : (n : Nat) -> Nat := fun (n : Nat) => n
+def count : (n : Nat) -> Option Nat := fun (n : Nat) => some n
 
 def choice : Sum Nat Nat := inr 5
 
-def picked : Nat := either size count choice
+def picked : Option Nat := either size count choice
 
 def nothing : Option Nat := none
 

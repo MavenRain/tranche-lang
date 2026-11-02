@@ -1,0 +1,1 @@
+{"diagnostics":[{"code":"REFUSE_LOWER","span":null,"message":"moved: a transp that does not reduce at compile time does not lower (HOST-LIMIT)","fix":null}],"progress":{"parsed":2,"typed":2,"laws_discharged":0,"laws_total":0},"bounds":[],"fails":[]}

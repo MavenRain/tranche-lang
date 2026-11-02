@@ -8,7 +8,9 @@
    decimal or 0x hex, then `u`; it goes to the entry as 4 i64, high limb first.
    A U256 result is the 32 bytes at address 0..31, low limb first (M8): any
    other address is `bad`. Each call runs in a new store, so a trap does not
-   reach the next call. Exit 0: each call printed a line. Exit 2: usage, IO or
+   reach the next call. An Option entry (ABI result `option[i32 status at 32]
+   R`) takes the status address 32 as one more i32; status 0 prints `none`.
+   Exit 0: each call printed a line. Exit 2: usage, IO or
    a module that does not load. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,12 +23,14 @@
 #define MAX_ENTRIES 256
 #define MAX_PARAMS 32
 #define MAX_NAME 128
+#define STATUS_AT 32 /* WASM_STATUS_AT of src/wasm.c */
 
 typedef struct {
   char name[MAX_NAME];
   size_t param_count;
   int wide_param[MAX_PARAMS]; /* 1: a U256 (4 i64), 0: a Nat or Flag */
   int wide_result;            /* 1: a U256 at address 0 */
+  int status;                 /* 1: an Option result, status 0 = none (Q-S3-23) */
 } Entry;
 
 typedef struct {
@@ -44,6 +48,7 @@ static int abi_line(Entry *e, const char *line) {
   const char *open = strstr(line, " (");
   const char *close = strstr(line, ") -> ");
   const char *p;
+  const char *r;
   size_t n = (size_t)(open - line);
   if (open == NULL || close == NULL || close < open || n == 0 || n >= MAX_NAME) return 0;
   memcpy(e->name, line, n);
@@ -57,7 +62,9 @@ static int abi_line(Entry *e, const char *line) {
     comma = strstr(e->wide_param[e->param_count] && end != NULL ? end : p, ", ");
     p = comma != NULL && comma < close ? comma + 2 : close;
   }
-  e->wide_result = strncmp(close + 5, "u256", 4) == 0;
+  e->status = strncmp(close + 5, "option[", 7) == 0;
+  r = e->status && strstr(close, "] ") != NULL ? strstr(close, "] ") + 2 : close + 5;
+  e->wide_result = strncmp(r, "u256", 4) == 0;
   return p == close;
 }
 
@@ -105,8 +112,9 @@ static int parse_u256(const char *text, U256 *out) {
   return ok;
 }
 
-/* The U256 at address ADDR of the first exported memory, low limb first. */
-static int read_result(wasmtime_context_t *ctx, wasmtime_instance_t *inst, uint64_t addr, U256 *out) {
+/* The N bytes at address ADDR of the first exported memory; NULL when they are
+   not all in it. */
+static uint8_t *memory_at(wasmtime_context_t *ctx, wasmtime_instance_t *inst, uint64_t addr, uint64_t n) {
   wasmtime_extern_t item;
   char *name = NULL;
   size_t name_len = 0;
@@ -115,9 +123,24 @@ static int read_result(wasmtime_context_t *ctx, wasmtime_instance_t *inst, uint6
   for (k = 0; !found && wasmtime_instance_export_nth(ctx, inst, k, &name, &name_len, &item); k++) {
     found = item.kind == WASMTIME_EXTERN_MEMORY;
   }
-  if (!found || addr + 32u > wasmtime_memory_data_size(ctx, &item.of.memory)) return 0;
+  return found && addr + n <= wasmtime_memory_data_size(ctx, &item.of.memory) ? wasmtime_memory_data(ctx, &item.of.memory) + addr
+                                                                            : NULL;
+}
+
+/* The status word of an Option entry (the i32 at STATUS_AT, low byte first); 2
+   when it is not in the memory. */
+static uint32_t read_status(wasmtime_context_t *ctx, wasmtime_instance_t *inst) {
+  const uint8_t *b = memory_at(ctx, inst, STATUS_AT, 4u);
+  return b == NULL ? 2u : (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
+}
+
+/* The U256 at address ADDR, low limb first. */
+static int read_result(wasmtime_context_t *ctx, wasmtime_instance_t *inst, uint64_t addr, U256 *out) {
+  const uint8_t *m = memory_at(ctx, inst, addr, 32u);
+  size_t k;
+  if (m == NULL) return 0;
   for (k = 0; k < 4u; k++) {
-    const uint8_t *b = wasmtime_memory_data(ctx, &item.of.memory) + addr + 8u * k;
+    const uint8_t *b = m + 8u * k;
     uint64_t w = 0;
     int j;
     for (j = 7; j >= 0; j--) w = (w << 8) | b[j];
@@ -132,7 +155,7 @@ static void run_call(wasm_engine_t *engine, wasmtime_module_t *module, const Abi
   size_t words = 0;
   char *tok;
   const Entry *e;
-  wasmtime_val_t args[4 * MAX_PARAMS];
+  wasmtime_val_t args[4 * MAX_PARAMS + 1];
   size_t nargs = 0;
   size_t k;
   for (tok = strtok(line, " \n"); tok != NULL && words < MAX_PARAMS + 2; tok = strtok(NULL, " \n")) word[words++] = tok;
@@ -156,6 +179,11 @@ static void run_call(wasm_engine_t *engine, wasmtime_module_t *module, const Abi
       nargs++;
     }
   }
+  if (e->status) {
+    args[nargs].kind = WASMTIME_I32;
+    args[nargs].of.i32 = STATUS_AT;
+    nargs++;
+  }
   {
     wasmtime_store_t *store = wasmtime_store_new(engine, NULL, NULL);
     wasmtime_context_t *ctx = wasmtime_store_context(store);
@@ -166,12 +194,18 @@ static void run_call(wasm_engine_t *engine, wasmtime_module_t *module, const Abi
     wasmtime_error_t *error = wasmtime_instance_new(ctx, module, NULL, 0, &inst, &trap);
     int have = error == NULL && trap == NULL && wasmtime_instance_export_get(ctx, &inst, e->name, strlen(e->name), &fn) &&
                fn.kind == WASMTIME_EXTERN_FUNC;
+    uint8_t *st = have && e->status ? memory_at(ctx, &inst, STATUS_AT, 4u) : NULL;
+    if (st != NULL) memcpy(st, "\2\0\0\0", 4u); /* status 2: the entry writes no status */
     if (have) error = wasmtime_func_call(ctx, &fn.of.func, args, nargs, &result, 1, &trap);
     if (trap != NULL) {
       printf("trap\n");
       wasm_trap_delete(trap);
     } else if (!have || error != NULL) {
       printf("bad: the entry does not run\n");
+    } else if (e->status && read_status(ctx, &inst) > 1u) {
+      printf("bad: the entry writes no status\n");
+    } else if (e->status && read_status(ctx, &inst) == 0) {
+      printf("none\n");
     } else {
       U256 x;
       char text[96];

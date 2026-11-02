@@ -1,0 +1,8 @@
+-- C9c bounds (Q-S3-32, Q-S3-33): steps is an upTo 7 fold over n, one has
+-- no loop, and wide makes a U256 sum (a prelude call).
+def steps : (n : Nat) -> Option Nat :=
+  fun (n : Nat) => bind (upTo 7 (fun (acc : Option Nat) => bind acc (fun (a : Nat) => natAdd a n)) (some 0) n) (fun (r : Option Nat) => r)
+
+def one : Nat := 1
+
+def wide : (x : U256) -> Option U256 := fun (x : U256) => u256Add x x

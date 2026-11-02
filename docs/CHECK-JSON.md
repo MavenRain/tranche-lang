@@ -1,9 +1,12 @@
 # `langc check --json`
 
-`langc check --json` checks a program as `langc check` does. It writes one
+`langc check --json` checks a program. After a clean check, it also lowers
+the program to the IR, thus a lowering refusal is a diagnostic too (ruling
+Q-S3-34). `langc check` without `--json` does not lower. It writes one
 JSON line on stdout. A tool reads this line in place of `ok` or the text
 diagnostic on stderr. S12 adds it (PLAN row A2, rulings Q-S12-1 to
-Q-S12-12).
+Q-S12-12). S3 C9c adds the lowering and the keys `bounds` and `fails`
+(rulings Q-S3-32 to Q-S3-36).
 
 ## Usage
 
@@ -15,7 +18,7 @@ build/langc --kit check --json PROG
 | Exit | stdout | stderr |
 |---|---|---|
 | 0 | the JSON line, with an empty diagnostic list | nothing |
-| 1 | the JSON line, with one diagnostic | nothing |
+| 1 | the JSON line, with one diagnostic: a check refusal or a lowering refusal | nothing |
 | 2 | nothing | the `OOM` diagnostic |
 
 ## The line
@@ -23,7 +26,7 @@ build/langc --kit check --json PROG
 The line is one JSON object and a newline. The keys come in this order:
 
 ```
-{"diagnostics":[DIAG],"progress":{"parsed":P,"typed":T,"laws_discharged":D,"laws_total":L}}
+{"diagnostics":[DIAG],"progress":{"parsed":P,"typed":T,"laws_discharged":D,"laws_total":L},"bounds":[BOUND],"fails":[FAIL]}
 ```
 
 When `langc` accepts the program, `diagnostics` is empty. Else it holds
@@ -37,7 +40,8 @@ one object, the first failure. An example (`test/json/REFUSE_SIG.json`):
   `docs/host/README.md` (section Source language).
 - `span`: the file and the source text that fails. The file is the path
   as given on the command line. Lines and columns start at 1, one byte
-  is one column, and the end column is exclusive.
+  is one column, and the end column is exclusive. A lowering diagnostic
+  has `span` and `fix` null: the IR keeps no source span.
 - `message`: the text of the diagnostic.
 - `fix`: `null`, or one edit: put `fix.text` in place of the text of
   `fix.span`. The edit removes this failure. Another failure can come
@@ -60,6 +64,63 @@ valid UTF-8 stays as it is (`src/front/json.h`).
 Only program decls count. Domain decls, kit decls and the spliced orbit,
 dao and zk sources do not count. After a `LEX_` or a `PARSE_` failure,
 the 4 counts are 0.
+
+## Bounds
+
+`bounds` has one object for each entry of the program, in source order
+(rulings Q-S3-32 and Q-S3-33):
+
+```
+{"entry":"NAME","ops":N,"stack":S,"memory":M}
+```
+
+An entry is a def that the build gives as a target function (`entry_of`):
+its result is a Nat, a Flag or a U256, or an `Option` of one. The counts
+are in IR units, the statements of `langc --kit ir` (`ir_bound` in
+`src/front/lower.c`):
+
+| Key | What it counts |
+|---|---|
+| `ops` | 1 for each IR statement and 1 for each expression node. A prelude call counts 1 and its args. An `if` or a `switch` counts its larger arm. A loop counts 1, 1 for its count K, and K times its body. |
+| `stack` | words: the locals, 1 for the status word of an `Option` entry (a Nat, Flag or U256 entry has no status word), and the most words that one expression holds at one time (the left operand before the right, the args in order) |
+| `memory` | heap words: the fields of each `alloc` and the result block of each prelude call, times the loop counts, the larger arm |
+
+The result block of a prelude call has 4 words for `u256_add`,
+`u256_sub`, `u256_mul`, `to_u256`, `sha256`, the `fe_` calls and
+`mul_div`, 5 words for `ec_add` and `ec_mul`, and 0 words for `u256_le`,
+`u256_eq` and `schnorr_ok`. The EC temporaries do not count. A count
+stops at `UINT64_MAX` and does not wrap. The IR has no call from one func
+to another, thus each entry is one frame. The target costs (Wasm, ES,
+WGSL) are for S8.
+
+When `diagnostics` is not empty, or the program has no entry, `bounds` is
+`[]`. An example (`test/json/kit.bounds.json`):
+
+```
+"bounds":[{"entry":"steps","ops":349,"stack":27,"memory":27},{"entry":"one","ops":2,"stack":1,"memory":0},{"entry":"wide","ops":39,"stack":12,"memory":7}]
+```
+
+## Fails
+
+`fails` has one object for each program def with an `Except` result
+(ruling Q-S3-35):
+
+```
+{"def":"NAME","values":["CTOR",...]}
+```
+
+`values` has the `Fail` constructors in the normal form of the def. This
+is an upper set: the inputs are Nat, Flag or U256, thus each `Fail` value
+comes from a constructor in the term. The walk does not go into a path
+abstraction. `Except` is a family (O24), thus no entry can give a `Fail`,
+and a def in `fails` has no object in `bounds`.
+
+When `diagnostics` is not empty, or no def has an `Except` result, `fails`
+is `[]`. An example (`test/json/kit.fails.json`):
+
+```
+"fails":[{"def":"pick","values":["full","overflow"]}]
+```
 
 ## FIXFILE
 
@@ -89,7 +150,8 @@ The `json rows` block of `test/gate.sh` runs each `test/json/*.lang` file
 as a row:
 
 - `CODE.lang`: a row for the code CODE. `ok.lang` and `kit.lang` are
-  accepted rows. `langc` refuses each other row, and its first code is
+  accepted rows, and so are the rows `kit.TAG.lang` (`kit.bounds`,
+  `kit.fails`). `langc` refuses each other row, and its first code is
   CODE.
 - `CODE.TAG.lang`: one more row for CODE. The code is the file name up to
   the first dot.
@@ -97,9 +159,12 @@ as a row:
   these bytes and write nothing on stderr.
 - `X.fix`: the FIXFILE of each refused row X. After `fronttool fix`,
   `langc check --json` must exit 0 or give a first code other than CODE.
-- The rows `kit`, `REFUSE_HISTORY_WRITE`, `REFUSE_MAP` and `REFUSE_STATE`
-  run with `--kit`.
-- Each `REFUSE_` code of `src/front/check.c` must have a row `CODE.lang`.
+- The rows `kit`, `REFUSE_HISTORY_WRITE`, `REFUSE_MAP`, `REFUSE_PARTIAL`,
+  `REFUSE_STATE` and the 5 lowering rows (`REFUSE_LOWER`,
+  `REFUSE_RUNTIME_CLOSURE`, `REFUSE_RUNTIME_TREE`, `REFUSE_TARGET_SECRET`
+  and `REFUSE_UNBOUNDED`) run with `--kit`.
+- Each `REFUSE_` code of `src/front/check.c` and `src/front/lower.c` must
+  have a row `CODE.lang` (ruling Q-S3-36).
 - Each row must be `langc fmt` canonical (`build/langc fmt X.lang | cmp -
   X.lang`). The `LEX_` and `PARSE_` rows are not in this check, because
   `langc fmt` refuses them. The gate line `fmt canonical` counts the
@@ -111,8 +176,9 @@ To add a row X:
 2. From the repo root, run `build/langc [--kit] check --json
    test/json/X.lang > test/json/X.json`. The span file is the path as
    given, thus use this relative path.
-3. Read the line. Count the progress values by hand.
+3. Read the line. Count the progress values and the bounds by hand (the
+   bounds from `build/langc --kit ir test/json/X.lang`).
 4. For a refused row, write `test/json/X.fix`.
 
-At S12 the gate prints `json rows: 20 passed`, `json refusal codes: 13 of
-13` and `json fixes: 18 passed`.
+At S3 the gate prints `json rows: 28 passed`, `json refusal codes: 19 of
+19` and `json fixes: 24 passed`.

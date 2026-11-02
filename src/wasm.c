@@ -34,7 +34,8 @@
 
 #define WASM_MAX_PAGES 16384u /* 1 GiB, the arena limit of langc eval */
 #define WASM_DEPTH_MAX 2000u
-#define WASM_HEAP_START 32u /* after the U256 result slot at address 0 (Q-S8-3) */
+#define WASM_STATUS_AT 32u  /* the status word a host gives an entry with status 1 (Q-S3-22) */
+#define WASM_HEAP_START 40u /* after the U256 result slot at address 0 (Q-S8-3) and the status word */
 
 enum {
   OP_UNREACHABLE = 0x00,
@@ -55,6 +56,7 @@ enum {
   OP_GLOBAL_GET = 0x23,
   OP_GLOBAL_SET = 0x24,
   OP_I64_LOAD = 0x29,
+  OP_I32_STORE = 0x36,
   OP_I64_STORE = 0x37,
   OP_MEMORY_SIZE = 0x3F,
   OP_MEMORY_GROW = 0x40,
@@ -111,6 +113,8 @@ typedef struct {
   uint32_t base;  /* the Wasm local of IR local 0 (part_entry) */
   int wide;       /* the entry gives a U256: RETURN copies it to address 0 */
   unsigned calls; /* the prelude functions the module calls, one bit per IrCall */
+  int status;         /* the entry has status 1 (Q-S3-22) */
+  uint32_t status_at; /* and the Wasm local of the status address */
 } Sink;
 
 typedef int (*Part)(Sink *s, const void *arg);
@@ -524,12 +528,10 @@ enum {
    = a_i b_j + p_(i+j) + carry fits in 64 bits), stored in the 64-byte block
    q; then a loop of 512 steps from the top bit i of P: top := X bit 255, X
    := X << 1 | bit i, X := X - m when top = 1 or X >= m (no borrow). */
-static int part_fe_mul(Sink *s, const void *arg) {
+static int wide_product_code(Sink *s) {
   uint32_t i;
   uint32_t j;
-  int ok;
-  (void)arg;
-  ok = body_locals(s, 54) && get_limbs(s, 0, FM_A) && get_limbs(s, 1, FM_B) && get_words(s, 2, FM_M);
+  int ok = get_limbs(s, 0, FM_A) && get_limbs(s, 1, FM_B);
   for (i = 0; i < 16u && ok; i++) ok = i64_const(s, 0) && op2(s, OP_LOCAL_SET, FM_P + i);
   for (i = 0; i < 8u && ok; i++) {
     ok = i64_const(s, 0) && op2(s, OP_LOCAL_SET, FM_CY);
@@ -542,6 +544,14 @@ static int part_fe_mul(Sink *s, const void *arg) {
     }
     ok = ok && op2(s, OP_LOCAL_GET, FM_CY) && op2(s, OP_LOCAL_SET, FM_P + i + 8u);
   }
+  return ok;
+}
+
+static int part_fe_mul(Sink *s, const void *arg) {
+  uint32_t i;
+  int ok;
+  (void)arg;
+  ok = body_locals(s, 54) && wide_product_code(s) && get_words(s, 2, FM_M);
   ok = ok && i32_const(s, 64) && op2(s, OP_CALL, 0) && op2(s, OP_LOCAL_SET, FM_Q);
   for (i = 0; i < 8u && ok; i++) {
     ok = op2(s, OP_LOCAL_GET, FM_Q) && put_byte(s, OP_I32_WRAP_I64) && op2(s, OP_LOCAL_GET, FM_P + 2u * i) &&
@@ -567,6 +577,72 @@ static int part_fe_mul(Sink *s, const void *arg) {
          sub_code(s, FM_D, FM_X, FM_M, FM_BW, FM_T2, FM_B1) && or_no_borrow(s, FM_K, FM_TOP, FM_BW) &&
          sel_code(s, FM_X, FM_D, FM_X, FM_K) && op2(s, OP_BR, 0) && put_byte(s, OP_END) && put_byte(s, OP_END) &&
          new_block(s, FM_R) && put_words(s, FM_R, FM_X) && op2(s, OP_LOCAL_GET, FM_R) && put_byte(s, OP_END);
+}
+
+/* Join four words of the schoolbook product into locals DST..DST+3. */
+static int product_words(Sink *s, uint32_t dst, uint32_t first) {
+  uint32_t i;
+  int ok = 1;
+  for (i = 0; i < 4u && ok; i++)
+    ok = op2(s, OP_LOCAL_GET, FM_P + first + 2u * i) && op2(s, OP_LOCAL_GET, FM_P + first + 2u * i + 1u) &&
+         i64_const(s, 32) && put_byte(s, OP_I64_SHL) && put_byte(s, OP_I64_OR) && op2(s, OP_LOCAL_SET, dst + i);
+  return ok;
+}
+
+/* u256_mul: a nonzero high half means the product does not fit. */
+static int part_u256_mul(Sink *s, const void *arg) {
+  uint32_t i;
+  int ok;
+  (void)arg;
+  ok = body_locals(s, 55) && wide_product_code(s) && i64_const(s, 0);
+  for (i = 8u; i < 16u && ok; i++)
+    ok = op2(s, OP_LOCAL_GET, FM_P + i) && put_byte(s, OP_I64_OR);
+  return ok && i64_const(s, 0) && put_byte(s, OP_I64_NE) && put_byte(s, OP_IF) && put_byte(s, TYPE_EMPTY) &&
+         i64_const(s, 0) && put_byte(s, OP_RETURN) && put_byte(s, OP_END) && product_words(s, FM_X, 0) &&
+         new_block(s, FM_R) && put_words(s, FM_R, FM_X) && op2(s, OP_LOCAL_GET, FM_R) && put_byte(s, OP_END);
+}
+
+/* Shift four words left by one, leaving bit 0 clear. */
+static int shift_words(Sink *s, uint32_t x) {
+  uint32_t i;
+  int ok = 1;
+  for (i = 3u; i > 0u && ok; i--)
+    ok = op2(s, OP_LOCAL_GET, x + i) && i64_const(s, 1) && put_byte(s, OP_I64_SHL) &&
+         op2(s, OP_LOCAL_GET, x + i - 1u) && i64_const(s, 63) && put_byte(s, OP_I64_SHR_U) &&
+         put_byte(s, OP_I64_OR) && op2(s, OP_LOCAL_SET, x + i);
+  return ok && op2(s, OP_LOCAL_GET, x) && i64_const(s, 1) && put_byte(s, OP_I64_SHL) && op2(s, OP_LOCAL_SET, x);
+}
+
+/* mul_div: long division of the exact product. The quotient fits precisely
+   when the high half is less than the divisor. FM_X is the remainder and
+   locals 57..60 hold the quotient, shifted in one bit per iteration. */
+static int part_mul_div(Sink *s, const void *arg) {
+  const uint32_t q = 57u;
+  uint32_t i;
+  int ok;
+  (void)arg;
+  ok = body_locals(s, 58) && wide_product_code(s) && get_words(s, 2, FM_M) && product_words(s, FM_X, 8u) &&
+       sub_code(s, FM_D, FM_X, FM_M, FM_BW, FM_T2, FM_B1) && op2(s, OP_LOCAL_GET, FM_BW) &&
+       put_byte(s, OP_I64_EQZ) && put_byte(s, OP_IF) && put_byte(s, TYPE_EMPTY) && i64_const(s, 0) &&
+       put_byte(s, OP_RETURN) && put_byte(s, OP_END) && product_words(s, FM_D, 0) && new_block(s, FM_Q) &&
+       put_words(s, FM_Q, FM_D);
+  for (i = 0; i < 4u && ok; i++)
+    ok = i64_const(s, 0) && op2(s, OP_LOCAL_SET, q + i);
+  ok = ok && i64_const(s, 256) && op2(s, OP_LOCAL_SET, FM_I) && put_byte(s, OP_BLOCK) && put_byte(s, TYPE_EMPTY) &&
+       put_byte(s, OP_LOOP) && put_byte(s, TYPE_EMPTY) && op2(s, OP_LOCAL_GET, FM_I) && put_byte(s, OP_I64_EQZ) &&
+       op2(s, OP_BR_IF, 1) && op2(s, OP_LOCAL_GET, FM_I) && i64_const(s, 1) && put_byte(s, OP_I64_SUB) &&
+       op2(s, OP_LOCAL_SET, FM_I) && op2(s, OP_LOCAL_GET, FM_X + 3u) && i64_const(s, 63) &&
+       put_byte(s, OP_I64_SHR_U) && op2(s, OP_LOCAL_SET, FM_TOP) && shift_words(s, FM_X) &&
+       op2(s, OP_LOCAL_GET, FM_X) && op2(s, OP_LOCAL_GET, FM_Q) && op2(s, OP_LOCAL_GET, FM_I) &&
+       i64_const(s, 6) && put_byte(s, OP_I64_SHR_U) && i64_const(s, 3) && put_byte(s, OP_I64_SHL) &&
+       put_byte(s, OP_I64_ADD) && put_byte(s, OP_I32_WRAP_I64) && memarg(s, OP_I64_LOAD, 0) &&
+       op2(s, OP_LOCAL_GET, FM_I) && put_byte(s, OP_I64_SHR_U) && i64_const(s, 1) && put_byte(s, OP_I64_AND) &&
+       put_byte(s, OP_I64_OR) && op2(s, OP_LOCAL_SET, FM_X) &&
+       sub_code(s, FM_D, FM_X, FM_M, FM_BW, FM_T2, FM_B1) && or_no_borrow(s, FM_K, FM_TOP, FM_BW) &&
+       sel_code(s, FM_X, FM_D, FM_X, FM_K) && shift_words(s, q) && op2(s, OP_LOCAL_GET, q) &&
+       op2(s, OP_LOCAL_GET, FM_K) && put_byte(s, OP_I64_OR) && op2(s, OP_LOCAL_SET, q) &&
+       op2(s, OP_BR, 0) && put_byte(s, OP_END) && put_byte(s, OP_END);
+  return ok && new_block(s, FM_R) && put_words(s, FM_R, q) && op2(s, OP_LOCAL_GET, FM_R) && put_byte(s, OP_END);
 }
 
 /* fe_inv (field.c 134-145, pow_limbs with e = m - 2): parameters a, m;
@@ -932,6 +1008,7 @@ static const Prelude prelude[] = {
     {"fe_add", 3, part_fe_add, 0u},     {"fe_sub", 3, part_fe_sub, 0u},     {"fe_mul", 3, part_fe_mul, 0u},
     {"fe_inv", 2, part_fe_inv, 1u << IR_CALL_FE_MUL}, {"ec_add", 2, part_ec_add, EC_NEEDS}, {"ec_mul", 2, part_ec_mul, EC_NEEDS},
     {"schnorr_ok", 5, part_schnorr_ok, SC_NEEDS},
+    {"u256_mul", 2, part_u256_mul, 0u}, {"mul_div", 3, part_mul_div, 0u},
 };
 
 #define PRELUDE_COUNT (sizeof prelude / sizeof prelude[0])
@@ -1094,6 +1171,10 @@ static int emit_stmt(Sink *s, const IrStmt *st, uint32_t t, unsigned depth) {
       return emit_loop(s, st, 1, t, depth);
     case IR_STMT_TRAP:
       return put_byte(s, OP_UNREACHABLE);
+    case IR_STMT_STATUS:
+      return s->status ? op2(s, OP_LOCAL_GET, s->status_at) && emit_expr(s, st->expr, t, depth + 1u) &&
+                             put_byte(s, OP_I32_WRAP_I64) && put_byte(s, OP_I32_STORE) && put_uleb(s, 2) && put_uleb(s, 0)
+                       : no_code(s, "statement", (unsigned)st->kind);
     case IR_STMT_RETURN:
       return emit_expr(s, st->expr, t, depth + 1u) && (!s->wide || result_block(s, t)) && put_byte(s, OP_RETURN);
   }
@@ -1161,15 +1242,20 @@ static int entry_param(Sink *s, const IrFunc *fn, size_t k, uint32_t pos) {
                                 : (op2(s, OP_LOCAL_GET, pos) && op2(s, OP_LOCAL_SET, dst))));
 }
 
+/* An entry with status 1 takes the status address (an i32) after the
+   others, so each IR local moves past it (a base), as with a U256. */
 static int part_entry(Sink *s, const void *arg) {
   const IrFunc *fn = arg;
   uint32_t w = wasm_params(fn);
+  uint32_t p = w + (fn->status ? 1u : 0u); /* with the status address */
   uint32_t pos = 0;
   size_t k;
   int ok;
-  s->base = w == fn->param_count ? 0u : w;
+  s->base = p == fn->param_count ? 0u : p;
   s->wide = fn->result == IR_SCALAR_U256;
-  ok = put_uleb(s, 1) && put_uleb(s, (uint64_t)s->base + fn->local_count + 3u - w) && put_byte(s, TYPE_I64) &&
+  s->status = fn->status;
+  s->status_at = w;
+  ok = put_uleb(s, 1) && put_uleb(s, (uint64_t)s->base + fn->local_count + 3u - p) && put_byte(s, TYPE_I64) &&
        i64_const(s, WASM_HEAP_START) && op2(s, OP_GLOBAL_SET, 0);
   for (k = 0; k < fn->param_count && ok; k++) {
     ok = entry_param(s, fn, k, pos);
@@ -1207,6 +1293,7 @@ static unsigned calls_stmt(const IrStmt *st, unsigned depth) {
   if (depth > WASM_DEPTH_MAX) return 0;
   switch (st->kind) {
     case IR_STMT_SET:
+    case IR_STMT_STATUS:
     case IR_STMT_RETURN:
       return calls_expr(st->expr, depth + 1u);
     case IR_STMT_ALLOC:
@@ -1253,6 +1340,16 @@ static int func_type(Sink *s, uint64_t n) {
   return ok && put_uleb(s, 1) && put_byte(s, TYPE_I64);
 }
 
+/* (i64 x N) -> i64 for entry FN; with status 1, an i32 (the status address)
+   after the N. */
+static int entry_type(Sink *s, const IrFunc *fn) {
+  uint32_t n = wasm_params(fn);
+  uint32_t k;
+  int ok = put_byte(s, TYPE_FUNC) && put_uleb(s, (uint64_t)n + (fn->status ? 1u : 0u));
+  for (k = 0; k < n && ok; k++) ok = put_byte(s, TYPE_I64);
+  return ok && (!fn->status || put_byte(s, TYPE_I32)) && put_uleb(s, 1) && put_byte(s, TYPE_I64);
+}
+
 /* Function I has type I: the allocator, the prelude functions, the entries. */
 static int part_types(Sink *s, const void *arg) {
   const IrProgram *prog = arg;
@@ -1260,7 +1357,7 @@ static int part_types(Sink *s, const void *arg) {
   int ok = put_uleb(s, 1u + ones(s->calls) + prog->func_count) && put_byte(s, TYPE_FUNC) && put_uleb(s, 1) &&
            put_byte(s, TYPE_I32) && put_uleb(s, 1) && put_byte(s, TYPE_I64);
   for (i = 0; i < PRELUDE_COUNT && ok; i++) ok = !((s->calls >> i) & 1u) || func_type(s, prelude[i].param_count);
-  for (i = 0; i < prog->func_count && ok; i++) ok = func_type(s, wasm_params(&prog->funcs[i]));
+  for (i = 0; i < prog->func_count && ok; i++) ok = entry_type(s, &prog->funcs[i]);
   return ok;
 }
 
@@ -1325,20 +1422,24 @@ static const char *abi_shape(IrScalar sc, int is_result) {
   return "?";
 }
 
-/* NAME (PARAM, ...) -> RESULT, with the Wasm shape of each U256 (Q-S8-3). */
+/* NAME (PARAM, ...) -> RESULT, with the Wasm shape of each U256 (Q-S8-3). An
+   Option result (status 1) starts with the address of its status word, the
+   last i32 param (0 none, 1 some; Q-S3-22, Q-S3-23). */
 int target_abi_line(const IrFunc *fn, FILE *out, FILE *err) {
   size_t k;
   (void)err;
   fprintf(out, "%s (", fn->name);
   for (k = 0; k < fn->param_count; k++) fprintf(out, "%s%s", k == 0 ? "" : ", ", abi_shape(fn->params[k], 0));
-  fprintf(out, ") -> %s\n", abi_shape(fn->result, 1));
+  fprintf(out, ") -> ");
+  if (fn->status) fprintf(out, "option[i32 status at %u] ", WASM_STATUS_AT);
+  fprintf(out, "%s\n", abi_shape(fn->result, 1));
   return 1;
 }
 
 /* Both parts are the module bytes. */
 int target_write(const IrProgram *prog, TargetPart part, FILE *out, FILE *err) {
   static const unsigned char header[8] = {0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00};
-  Sink s = {out, 0, err, 0, 0, 0};
+  Sink s = {out, 0, err, 0, 0, 0, 0, 0};
   size_t i;
   int ok = 1;
   (void)part;

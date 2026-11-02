@@ -1,0 +1,29 @@
+-- The failures of the domain (S3, N6, Q-S3-3 (a)): one def for each Fail
+-- value, and orFail over some and none.
+def failBadProof : Fail := badProof
+
+def failBadSig : Fail := badSig
+
+def failBadAttest : Fail := badAttest
+
+def failRefusedPair : Fail := refusedPair
+
+def failOverCap : Fail := overCap
+
+def failOverBalance : Fail := overBalance
+
+def failNoQuorum : Fail := noQuorum
+
+def failDropped : Fail := dropped
+
+def failOutOfRange : Fail := outOfRange
+
+def failFull : Fail := full
+
+def failOverflow : Fail := overflow
+
+def failReplay : Fail := replay
+
+def orSome : Except Nat := orFail Nat overflow (some 3)
+
+def orNone : Except Nat := orFail Nat overflow none

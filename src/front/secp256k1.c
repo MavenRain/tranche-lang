@@ -264,3 +264,50 @@ void group_mul(GroupPoint *out, const GroupPoint *p, const U256 *k) {
   fe_mul(&zi2, &zi2, &zi, &SECP_P);
   fe_mul(&out->y, &acc.y, &zi2, &SECP_P);
 }
+
+/* OUT[i] = START + i STEP for each i below COUNT, by Jacobian adds, then one
+   inverse over the product of the nonzero Z (Montgomery's trick): the
+   inverse of Z_i is the inverse of the product up to i times the product
+   below i. A Z of 0 gives (0, 0). */
+void group_walk(GroupPoint *out, const GroupPoint *start, const GroupPoint *step, uint32_t count) {
+  Jac pts[GROUP_WALK_MAX];
+  Fe pre[GROUP_WALK_MAX];
+  Fe acc;
+  Fe inv;
+  Fe zi;
+  Fe zi2;
+  uint32_t i;
+  if (count < 1u || count > GROUP_WALK_MAX)
+    return;
+  memset(&pts[0], 0, sizeof pts[0]);
+  if (!is_infinity(start)) {
+    pts[0].x = start->x;
+    pts[0].y = start->y;
+    fe_from_u64(&pts[0].z, 1);
+  }
+  for (i = 1u; i < count; i++)
+    jac_add_affine(&pts[i], &pts[i - 1u], step);
+  fe_from_u64(&acc, 1);
+  for (i = 0; i < count; i++) {
+    if (!fe_is_zero(&pts[i].z))
+      fe_mul(&acc, &acc, &pts[i].z, &SECP_P);
+    pre[i] = acc;
+  }
+  /* ACC is a product of nonzero Z, or 1, so it has an inverse. */
+  fe_inv(&inv, &acc, &SECP_P);
+  for (i = count; i > 0; i--) {
+    if (fe_is_zero(&pts[i - 1u].z)) {
+      infinity(&out[i - 1u]);
+    } else {
+      if (i > 1u)
+        fe_mul(&zi, &inv, &pre[i - 2u], &SECP_P);
+      else
+        zi = inv;
+      fe_mul(&inv, &inv, &pts[i - 1u].z, &SECP_P);
+      fe_mul(&zi2, &zi, &zi, &SECP_P);
+      fe_mul(&out[i - 1u].x, &pts[i - 1u].x, &zi2, &SECP_P);
+      fe_mul(&zi2, &zi2, &zi, &SECP_P);
+      fe_mul(&out[i - 1u].y, &pts[i - 1u].y, &zi2, &SECP_P);
+    }
+  }
+}

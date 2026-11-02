@@ -14,7 +14,7 @@ def pointEq : (p : Prod U256 U256) -> (q : Prod U256 U256) -> Flag :=
 
 -- z P = A + e Q: 2 ecMul, 1 ecAdd.
 def holds : (p : Prod U256 U256) -> (a : Prod U256 U256) -> (q : Prod U256 U256) -> (z : U256) -> (e : U256) -> Flag :=
-  fun (p : Prod U256 U256) (a : Prod U256 U256) (q : Prod U256 U256) (z : U256) (e : U256) => pointEq (ecMul p z) (ecAdd a (ecMul q e))
+  fun (p : Prod U256 U256) (a : Prod U256 U256) (q : Prod U256 U256) (z : U256) (e : U256) => option flagNo (fun (l : Prod U256 U256) => option flagNo (fun (r : Prod U256 U256) => pointEq l r) (bind (ecMul q e) (fun (t : Prod U256 U256) => ecAdd a t))) (ecMul p z)
 
 -- A ballot has 3 entries (rulings Q-S10-r10 and Q-S10-r11): an entry with
 -- the sum check and 2 holds does not compile on the Metal backend
@@ -28,11 +28,11 @@ def sigOk : (k : U256) -> (r : U256) -> (z : U256) -> (m : U256) -> (yx : U256) 
 -- two challenges c0 and c1 add up to the hash of A0.x, A1.x and the entry,
 -- and z0 G = A0 + c0 Y.
 def or0Ok : (yx : U256) -> (yy : U256) -> (a0x : U256) -> (a0y : U256) -> (a1x : U256) -> (c0 : U256) -> (c1 : U256) -> (z0 : U256) -> Flag :=
-  fun (yx : U256) (yy : U256) (a0x : U256) (a0y : U256) (a1x : U256) (c0 : U256) (c1 : U256) (z0 : U256) => flagIf (u256Eq (u256Add c0 c1) (hash (hash a0x a1x) (hash yx yy))) (holds gen (pair a0x a0y) (pair yx yy) z0 c0) flagNo
+  fun (yx : U256) (yy : U256) (a0x : U256) (a0y : U256) (a1x : U256) (c0 : U256) (c1 : U256) (z0 : U256) => option flagNo (fun (c : U256) => flagIf (u256Eq c (hash (hash a0x a1x) (hash yx yy))) (holds gen (pair a0x a0y) (pair yx yy) z0 c0) flagNo) (u256Add c0 c1)
 
 -- Part 3: the OR proof, branch 1: z1 G = A1 + c1 (Y - G).
 def or1Ok : (yx : U256) -> (yy : U256) -> (a1x : U256) -> (a1y : U256) -> (c1 : U256) -> (z1 : U256) -> Flag :=
-  fun (yx : U256) (yy : U256) (a1x : U256) (a1y : U256) (c1 : U256) (z1 : U256) => holds gen (pair a1x a1y) (ecAdd (pair yx yy) negG) z1 c1
+  fun (yx : U256) (yy : U256) (a1x : U256) (a1y : U256) (c1 : U256) (z1 : U256) => option flagNo (fun (y : Prod U256 U256) => holds gen (pair a1x a1y) y z1 c1) (ecAdd (pair yx yy) negG)
 
 -- A link of a hash chain: the claimed word is the hash of the parent and the
 -- payload.

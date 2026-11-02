@@ -17,10 +17,11 @@ def outcomeSet : isSet Outcome :=
 
 def b : Ballot_priv := castPrivate (inr (inr unit)) (inr unit)
 
-def w : ZKWitness := proveZK b
+def w : Option ZKWitness := proveZK b
 
 def c : Choice := project b
 
 def t : Tally := orbitProj (fun (m : Member) => inl unit)
 
-def complete : Path (Type 0) (verifyZK w c t) Unit := refl
+def complete : Path (Option (Type 0)) (bind w (fun (x : ZKWitness) => verifyZK x c t)) (some Unit) :=
+  refl

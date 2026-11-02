@@ -9,11 +9,12 @@ def k0 : U256 := zkKey 0
 
 def k1 : U256 := zkKey 1
 
-def p0 : Prod U256 U256 := ecMul g k0
+def p0 : Option (Prod U256 U256) := ecMul g k0
 
-def p1 : Prod U256 U256 := ecMul g k1
+def p1 : Option (Prod U256 U256) := ecMul g k1
 
-def ring : List (Prod U256 U256) := cons p0 (cons p1 nil)
+def ring : Option (List (Prod U256 U256)) :=
+  bind p0 (fun (a : Prod U256 U256) => bind p1 (fun (b : Prod U256 U256) => some (cons a (cons b nil))))
 
 def poll : U256 := 0u
 
@@ -23,11 +24,12 @@ def init : State := makeState mapEmpty mapEmpty
 
 -- Entry: a used key image reverts, a failed verify reverts, else the key image is recorded and the choice counted.
 def cast : (env : Env) -> (s : State) -> (choice : U256) -> (c1 : U256) -> (s1 : U256) -> (s2 : U256) -> (ix : U256) -> (iy : U256) -> Option (Prod State (List Out)) :=
-  fun (env : Env) (s : State) (choice : U256) (c1 : U256) (s1 : U256) (s2 : U256) (ix : U256) (iy : U256) => flagIf (mapGet (used s) (hash (hash ix iy) poll)) none (flagIf (zkVerify ring poll choice (cons c1 (cons s1 (cons s2 (cons ix (cons iy nil)))))) (some (pair (makeState (mapSet (used s) (hash (hash ix iy) poll) flagYes) (mapSet (tally s) choice (u256Add (mapGet (tally s) choice) 1u))) nil)) none)
+  fun (env : Env) (s : State) (choice : U256) (c1 : U256) (s1 : U256) (s2 : U256) (ix : U256) (iy : U256) => flagIf (mapGet (used s) (hash (hash ix iy) poll)) none (option none (fun (f : Flag) => flagIf f (bind (u256Add (mapGet (tally s) choice) 1u) (fun (t : U256) => some (pair (makeState (mapSet (used s) (hash (hash ix iy) poll) flagYes) (mapSet (tally s) choice t)) nil))) none) (bind ring (fun (rg : List (Prod U256 U256)) => zkVerify rg poll choice (cons c1 (cons s1 (cons s2 (cons ix (cons iy nil))))))))
 
 -- View: the count of a choice.
 def count : (env : Env) -> (s : State) -> (choice : U256) -> U256 :=
   fun (env : Env) (s : State) (choice : U256) => mapGet (tally s) choice
 
 -- The host path: the cast of member 0 for choice 1 verifies in the evaluator.
-def ok : Flag := zkVerify ring poll 1u (zkSign ring k0 poll 1u)
+def ok : Option Flag :=
+  bind ring (fun (rg : List (Prod U256 U256)) => bind (zkSign rg k0 poll 1u) (fun (sg : List U256) => zkVerify rg poll 1u sg))

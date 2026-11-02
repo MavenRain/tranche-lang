@@ -1,33 +1,31 @@
--- The binary node lowerings (cairn-lang S8, Q-S8-10, Q-S8-11). Each fmMul
--- here has a static fmEta on one side (snoc: right, cons: left, mix: both).
--- fmChain reads a record left to right and fmRun right to left; the digit
--- fold 3d + a is not symmetric, so a swapped side or order gives a different
--- value. The gate compares langc eval results.
-def snocs : (n : Nat) -> FreeMon Nat :=
-  fun (n : Nat) => fold (fun (m : FreeMon Nat) => fmMul Nat (fmMul Nat m (fmEta Nat 1)) (fmEta Nat 2)) (fmUnit Nat) n
+-- The digit fold 3d + a over the leaves of the old binary node records
+-- (cairn-lang S8, Q-S8-10, Q-S8-11), one upTo 7 fold each (C9b2: the
+-- fmChain and fmRun walks have no static bound). Each step adds the leaves
+-- 1, 2 at the end (snoc), 3, 4 at the front (cons), or 1 at the front and
+-- 2 at the end (mix). Chain reads the leaves left to right and run right to
+-- left. 3d + a is not symmetric, so a swapped side or order gives a
+-- different value. mix keeps the state (9^k, x). The gate compares langc
+-- eval results.
+def digit : (d : Nat) -> (a : Nat) -> Option Nat :=
+  fun (d : Nat) (a : Nat) => bind (natAdd d d) (fun (e : Nat) => bind (natAdd e d) (fun (t : Nat) => natAdd t a))
 
-def conses : (n : Nat) -> FreeMon Nat :=
-  fun (n : Nat) => fold (fun (m : FreeMon Nat) => fmMul Nat (fmEta Nat 3) (fmMul Nat (fmEta Nat 4) m)) (fmUnit Nat) n
+def snocChain : (n : Nat) -> Option Nat :=
+  fun (n : Nat) => bind (upTo 7 (fun (acc : Option Nat) => bind acc (fun (d : Nat) => bind (digit d 1) (fun (e : Nat) => digit e 2))) (some 0) n) (fun (r : Option Nat) => r)
 
-def mixes : (n : Nat) -> FreeMon Nat :=
-  fun (n : Nat) => fold (fun (m : FreeMon Nat) => fmMul Nat (fmEta Nat 1) (fmMul Nat m (fmEta Nat 2))) (fmUnit Nat) n
+def snocRun : (n : Nat) -> Option Nat :=
+  fun (n : Nat) => bind (upTo 7 (fun (acc : Option Nat) => bind acc (fun (d : Nat) => bind (digit d 2) (fun (e : Nat) => digit e 1))) (some 0) n) (fun (r : Option Nat) => r)
 
-def snocChain : (n : Nat) -> Nat :=
-  fun (n : Nat) => fmChain Nat Nat natIsSet (fun (d : Nat) (a : Nat) => natAdd (natAdd (natAdd d d) d) a) 0 (snocs n)
+def consChain : (n : Nat) -> Option Nat :=
+  fun (n : Nat) => bind (upTo 7 (fun (acc : Option Nat) => bind acc (fun (d : Nat) => bind (digit d 3) (fun (e : Nat) => digit e 4))) (some 0) n) (fun (r : Option Nat) => r)
 
-def snocRun : (n : Nat) -> Nat :=
-  fun (n : Nat) => fmRun Nat Nat natIsSet (fun (a : Nat) (d : Nat) => natAdd (natAdd (natAdd d d) d) a) 0 (snocs n)
+def consRun : (n : Nat) -> Option Nat :=
+  fun (n : Nat) => bind (upTo 7 (fun (acc : Option Nat) => bind acc (fun (d : Nat) => bind (digit d 4) (fun (e : Nat) => digit e 3))) (some 0) n) (fun (r : Option Nat) => r)
 
-def consChain : (n : Nat) -> Nat :=
-  fun (n : Nat) => fmChain Nat Nat natIsSet (fun (d : Nat) (a : Nat) => natAdd (natAdd (natAdd d d) d) a) 0 (conses n)
+def mixChain : (n : Nat) -> Option Nat :=
+  fun (n : Nat) => bind (upTo 7 (fun (s : Option (Prod Nat Nat)) => bind s (fun (p : Prod Nat Nat) => bind (digit (first p) 0) (fun (h : Nat) => bind (digit h 0) (fun (q : Nat) => bind (natAdd (first p) (second p)) (fun (y : Nat) => map (fun (x : Nat) => pair q x) (digit y 2)))))) (some (pair 1 0)) n) (fun (s : Option (Prod Nat Nat)) => map (fun (p : Prod Nat Nat) => second p) s)
 
-def consRun : (n : Nat) -> Nat :=
-  fun (n : Nat) => fmRun Nat Nat natIsSet (fun (a : Nat) (d : Nat) => natAdd (natAdd (natAdd d d) d) a) 0 (conses n)
+def mixRun : (n : Nat) -> Option Nat :=
+  fun (n : Nat) => bind (upTo 7 (fun (s : Option (Prod Nat Nat)) => bind s (fun (p : Prod Nat Nat) => bind (digit (first p) 0) (fun (h : Nat) => bind (digit h 0) (fun (q : Nat) => bind (natAdd (first p) (first p)) (fun (w : Nat) => bind (natAdd w (second p)) (fun (y : Nat) => map (fun (x : Nat) => pair q x) (digit y 1))))))) (some (pair 1 0)) n) (fun (s : Option (Prod Nat Nat)) => map (fun (p : Prod Nat Nat) => second p) s)
 
-def mixChain : (n : Nat) -> Nat :=
-  fun (n : Nat) => fmChain Nat Nat natIsSet (fun (d : Nat) (a : Nat) => natAdd (natAdd (natAdd d d) d) a) 0 (mixes n)
-
-def mixRun : (n : Nat) -> Nat :=
-  fun (n : Nat) => fmRun Nat Nat natIsSet (fun (a : Nat) (d : Nat) => natAdd (natAdd (natAdd d d) d) a) 0 (mixes n)
-
-def snocLen : (n : Nat) -> Nat := fun (n : Nat) => len Nat (snocs n)
+def snocLen : (n : Nat) -> Option Nat :=
+  fun (n : Nat) => bind (upTo 7 (fun (acc : Option Nat) => bind acc (fun (a : Nat) => natAdd a 2)) (some 0) n) (fun (r : Option Nat) => r)

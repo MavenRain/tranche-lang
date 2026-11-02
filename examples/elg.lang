@@ -1,0 +1,13 @@
+-- The bounded discrete log (S3, N7, USER ruling Q-S3-26 (a)): elgLog p is
+-- some m when p = m G and m is below 2^32 (B = 32, Q-S0-4 (a)), and none
+-- at 2^32 and for a point off the curve.
+def logSeven : Option Nat :=
+  bind (ecMul (pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u) 7u) (fun (p : Prod U256 U256) => elgLog p)
+
+def logTop : Option Nat :=
+  bind (ecMul (pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u) 4294967295u) (fun (p : Prod U256 U256) => elgLog p)
+
+def logOver : Option Nat :=
+  bind (ecMul (pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u) 4294967296u) (fun (p : Prod U256 U256) => elgLog p)
+
+def logOff : Option Nat := elgLog (pair 1u 1u)

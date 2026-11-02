@@ -61,7 +61,10 @@ typedef enum {
   IR_CALL_FE_INV,   /* a new block a^(m - 2) mod m (field.c fe_inv) */
   IR_CALL_EC_ADD,   /* a new pair block p + q on secp256k1 (secp256k1.c group_add); 0 for invalid or trapped coordinates */
   IR_CALL_EC_MUL,   /* a new pair block k p on secp256k1 (secp256k1.c group_mul); 0 for invalid or trapped coordinates */
-  IR_CALL_SCHNORR_OK /* 1 when z G = R + c P for the x-only key and R.x (frost.c schnorr_verify), else 0 */
+  IR_CALL_SCHNORR_OK, /* 1 when z G = R + c P for the x-only key and R.x (frost.c schnorr_verify), else 0 */
+  IR_CALL_U256_MUL, /* a new block a b, or 0 when the product is 2^256 or more (u256.c u256_mul) */
+  IR_CALL_MUL_DIV   /* a new block floor(a b / d) over the 512-bit product, or 0 when it is 2^256 or
+                       more (u256.c u256_muldiv); d is not 0 (the NonZero type) */
 } IrCall;
 
 typedef enum {
@@ -102,7 +105,9 @@ typedef enum {
   IR_STMT_WHILE,  /* counter := expr; run body while counter > 0 and local != 0,
                      counter decreasing by 1 at each run; body sets local */
   IR_STMT_TRAP,   /* stop the call: Wasm unreachable, EVM REVERT */
-  IR_STMT_RETURN  /* return expr */
+  IR_STMT_RETURN, /* return expr */
+  IR_STMT_STATUS  /* the status word := expr (0 none, 1 some); only in an entry with
+                     status 1, before its RETURN */
 } IrStmtKind;
 
 struct IrStmt {
@@ -118,7 +123,12 @@ struct IrStmt {
   size_t arm_count;
 };
 
-/* One exported entry. The body block ends in RETURN or TRAP on each path. */
+/* One exported entry. The body block ends in RETURN or TRAP on each path.
+   STATUS 1: the entry has an Option result (Q-S3-22). It takes one more
+   argument after the parameters, the address of a status word (WGSL: a
+   second word of the out row, Q-S3-23), writes 0 (none) or 1 (some) there
+   and returns the payload (0 for none), with IR_STMT_STATUS before each
+   RETURN; it does not run TRAP for none. The address is not a local. */
 typedef struct {
   const char *name;
   const IrScalar *params;
@@ -126,6 +136,7 @@ typedef struct {
   IrScalar result;
   uint32_t local_count; /* includes the parameters */
   IrBlock body;
+  int status;
 } IrFunc;
 
 typedef struct {

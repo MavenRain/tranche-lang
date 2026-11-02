@@ -1,0 +1,5 @@
+-- REFUSE_RUNTIME_CLOSURE (Q-S3-34, Q-S3-36): the check accepts this
+-- program, but the fold gives a function value at run time. The fix gives
+-- the upTo 7 form with a Nat accumulator.
+def bad : (n : Nat) -> Option Nat :=
+  fun (n : Nat) => fold (fun (g : (x : Nat) -> Option Nat) (x : Nat) => bind (natAdd x 1) g) (fun (x : Nat) => some x) n 0

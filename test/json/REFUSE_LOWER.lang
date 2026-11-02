@@ -1,0 +1,6 @@
+-- REFUSE_LOWER (Q-S3-34, Q-S3-36): a transp along a path of types known
+-- only at run time (tyP n) does not reduce at compile time, thus it does
+-- not lower. The fix gives n, the value that the transp moves.
+def tyP : Nat -> Path (Type 0) Nat Nat := fun n => flagIf (natEq n 0) refl refl
+
+def moved : (n : Nat) -> Nat := fun (n : Nat) => transp (fun (i : I) => tyP n @ i) i0 n

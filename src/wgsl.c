@@ -24,6 +24,8 @@
      new block) and writes row idx of NAME_out: a status u32 (0 ok, 1 TRAP),
      then the result u32s in the same layout. A Flag argument larger than 1
      traps, as in wasm.c. An idx past the rows of NAME_out returns.
+     An entry with an Option result (IrFunc status 1, Q-S3-23) has one
+     more u32 after the status, 0 none or 1 some, then the result.
    Traps: an op that traps in wasm.c sets tr, and the code goes on; each loop
    stops when tr is set, and the RETURN of the entry writes status 1 when tr
    is set. A TRAP statement, or a SWITCH value with no arm, writes status 1
@@ -693,6 +695,44 @@ static const struct {
    "  let rhs = ec_addxy(b, ec_mulxy(a, c));\n"
    "  return w_of(u_eq(lhs.x, rhs.x) && u_eq(lhs.y, rhs.y));\n"
    "}"},
+  {IR_CALL_U256_MUL, "u256Mul", "a: vec2<u32>, b: vec2<u32>", NEED_LIMB,
+   "fn u256Mul(a: vec2<u32>, b: vec2<u32>) -> vec2<u32> {\n"
+   "  var p = u_wide(u_load(a), u_load(b));\n"
+   "  var r: L8;\n"
+   "  for (var i = 0u; i < 8u; i = i + 1u) {\n"
+   "    if (p[8u + i] != 0u) {\n"
+   "      return W0;\n"
+   "    }\n"
+   "    r[i] = p[i];\n"
+   "  }\n"
+   "  return u_block(r);\n"
+   "}"},
+  {IR_CALL_MUL_DIV, "mulDiv", "a: vec2<u32>, b: vec2<u32>, d: vec2<u32>", NEED_LIMB,
+   "fn mulDiv(a: vec2<u32>, b: vec2<u32>, d: vec2<u32>) -> vec2<u32> {\n"
+   "  var p = u_wide(u_load(a), u_load(b));\n"
+   "  let m = u_load(d);\n"
+   "  var r: L8;\n"
+   "  var q: L8;\n"
+   "  for (var i = 0u; i < 8u; i = i + 1u) {\n"
+   "    r[i] = p[8u + i];\n"
+   "  }\n"
+   "  if (!u_lt(r, m)) {\n"
+   "    return W0;\n"
+   "  }\n"
+   "  for (var k = 0u; k < 256u; k = k + 1u) {\n"
+   "    let j = 255u - k;\n"
+   "    let top = r[7] >> 31u;\n"
+   "    for (var i = 7u; i > 0u; i = i - 1u) {\n"
+   "      r[i] = (r[i] << 1u) | (r[i - 1u] >> 31u);\n"
+   "    }\n"
+   "    r[0] = (r[0] << 1u) | ((p[j / 32u] >> (j % 32u)) & 1u);\n"
+   "    if (top == 1u || !u_lt(r, m)) {\n"
+   "      r = u_sub(r, m);\n"
+   "      q[j / 32u] = q[j / 32u] | (1u << (j % 32u));\n"
+   "    }\n"
+   "  }\n"
+   "  return u_block(q);\n"
+   "}"},
 };
 
 #define CALL_COUNT (sizeof CALLS / sizeof CALLS[0])
@@ -838,6 +878,7 @@ static unsigned calls_stmt(const IrStmt *st) {
   unsigned m = 0;
   switch (st->kind) {
     case IR_STMT_SET:
+    case IR_STMT_STATUS:
     case IR_STMT_RETURN:
       return calls_expr(st->expr);
     case IR_STMT_ALLOC:
@@ -952,7 +993,7 @@ static int out_word(Wgsl *o, unsigned depth, uint64_t k, int u256) {
   uint64_t h;
   int ok = 1;
   for (h = 0; h < 2u && ok; h++) {
-    ok = indent(o, depth) && put_name(o, "_out[ob + ") && put_u32(o, 1u + 2u * k + h) && put(o, "] = ") &&
+    ok = indent(o, depth) && put_name(o, "_out[ob + ") && put_u32(o, 1u + (o->fn->status ? 1u : 0u) + 2u * k + h) && put(o, "] = ") &&
          (u256 ? (put(o, "ld(r, ") && put_u32(o, k) && put(o, ")")) : put(o, "r")) && put(o, half[h]);
   }
   return ok;
@@ -1005,6 +1046,10 @@ static int emit_stmt(Wgsl *o, const IrStmt *st, unsigned depth) {
       return emit_loop(o, st, 1, depth);
     case IR_STMT_TRAP:
       return emit_trap(o, depth);
+    case IR_STMT_STATUS:
+      return o->fn->status ? indent(o, depth) && put_name(o, "_out[ob + 1u] = (") && emit_expr(o, st->expr) &&
+                                 put(o, ").x;\n")
+                           : no_code(o, "statement", (unsigned)st->kind);
     case IR_STMT_RETURN:
       return emit_return(o, st, depth);
   }
@@ -1051,13 +1096,14 @@ static int emit_param(Wgsl *o, size_t i, uint64_t base) {
    body. A body that ends with no RETURN writes status 1. */
 static int emit_func(Wgsl *o, const IrFunc *fn) {
   uint64_t in = 0;
-  uint64_t out = 1u + width(fn->result);
+  uint64_t out = 1u + (fn->status ? 1u : 0u) + width(fn->result);
   size_t i;
   int ok;
   o->fn = fn;
   for (i = 0; i < fn->param_count; i++) in += width(fn->params[i]);
   ok = put(o, "\n// ") && put(o, fn->name) && put(o, ": an in row of ") && put_u64(o, in) &&
-       put(o, " u32, an out row of ") && put_u64(o, out) && put(o, " u32 (the status, then the result)\n") &&
+       put(o, " u32, an out row of ") && put_u64(o, out) && put(o, fn->status ? " u32 (the status, the Option status, then the result)\n"
+                                    : " u32 (the status, then the result)\n") &&
        put(o, "@group(0) @binding(0) var<storage, read> ") && put_name(o, "_in: array<u32>;\n") &&
        put(o, "@group(0) @binding(1) var<storage, read_write> ") && put_name(o, "_out: array<u32>;\n") &&
        put(o, "\n@compute @workgroup_size(64)\nfn ") && put(o, fn->name) &&

@@ -1,7 +1,7 @@
 /* The table of `langc explain CODE` (S13 Q-S13-7 (a) and Q-S13-10 (a)),
    ported from evolve-lang src/codes.c (8c5d8e1). Each row is a refusal code
-   of docs/host/README.md, in the same order: the 13 rows of the Source
-   language table, then the 4 bullets of Compilation. The meaning is the
+   of docs/host/README.md, in the same order: the 14 rows of the Source
+   language table, then the 5 bullets of Compilation. The meaning is the
    README text verbatim. */
 #include <string.h>
 
@@ -13,6 +13,7 @@ static const CodeRow CODE_ROWS[] = {
   {"REFUSE_REC", "Source language", "`def rec`, or a definition that refers to itself or to a later definition"},
   {"REFUSE_NAME", "Source language", "a core name, a domain name, a reserved name or a repeated name as a new definition"},
   {"REFUSE_TIME", "Source language", "a time word (`now`, `block`, `timestamp`, `time`, `clock`, `epoch`) as a name or a use; the message says to count operations (`len r`, an `OpPos`)"},
+  {"REFUSE_PARTIAL", "Source language", "a partial name such as `pred` or `head`, an `Option` result where its payload is wanted, or the literal 0 as a `NonZero` value; take the `Option` apart with `option` or `bind`"},
   {"REFUSE_CELL", "Source language", "a type constructor that is not one cell signature or one cocell signature, a cons-list name in place of a cell monad, or a sealed family that is not a cell monad"},
   {"REFUSE_EVENT", "Source language", "an event with more fields than the entry parameter limit, an event field that is not an ABI word type (`Nat`, `Flag`, `U256`, `Addr`), or a repeated event field"},
   {"REFUSE_HISTORY_WRITE", "Source language", "a history field `h` that is not `(h t)` or `ADD (h t) e` with `ADD` as `u256Add` or `natAdd`, a history constructor without all of its arguments, or a definition with `State` in its type that refers to a name that the history rule does not check"},
@@ -25,6 +26,7 @@ static const CodeRow CODE_ROWS[] = {
   {"REFUSE_RUNTIME_TREE", "Compilation", "a fold walks a tree that exists only at run time."},
   {"REFUSE_LOWER", "Compilation", "a construct does not lower."},
   {"REFUSE_TARGET_SECRET", "Compilation", "the operation touches a secret key or a witness (O6)."},
+  {"REFUSE_UNBOUNDED", "Compilation", "a loop has a trip count that exists only at run time; write it as `upTo K` with a Nat literal K."},
 };
 
 size_t code_count(void) { return sizeof CODE_ROWS / sizeof CODE_ROWS[0]; }

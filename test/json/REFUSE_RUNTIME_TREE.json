@@ -1,0 +1,1 @@
+{"diagnostics":[{"code":"REFUSE_RUNTIME_TREE","span":null,"message":"t: a fold over a tree of Word must exist at run time (HOST-LIMIT)","fix":null}],"progress":{"parsed":1,"typed":1,"laws_discharged":0,"laws_total":0},"bounds":[],"fails":[]}

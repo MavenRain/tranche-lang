@@ -8,12 +8,14 @@
 #define ENTRY_PARAMS_MAX 32u /* 16 before sealed-lang S2 (R23): slashUsr takes 19 words */
 
 /* An entry: a program definition of type Nat, Flag, U256, or a function of
-   Nat, Flag and U256 arguments to a Nat, Flag or U256 result (Q-S8-3). */
+   Nat, Flag and U256 arguments to a Nat, Flag or U256 result (Q-S8-3), or
+   to an Option of one (Q-S3-9). */
 typedef struct {
   uint32_t param_count;
   int param_flag[ENTRY_PARAMS_MAX];
   int param_u256[ENTRY_PARAMS_MAX];
   int result_flag;
+  int result_option;
   int result_u256;
 } Entry;
 

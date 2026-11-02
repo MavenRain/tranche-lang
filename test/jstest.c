@@ -11,9 +11,9 @@
 
 static int check_calls(void) {
   static const char command[] =
-      "printf \"default 7\\na' 7\\nthen 7\\n\" | "
+      "printf \"default 7\\na' 7\\nthen 7\\na' 18446744073709551615\\n\" | "
       "build/jstool 'build/js-names #?%.mjs' build/js-names.abi";
-  static const char *const expected[] = {"7\n", "8\n", "9\n"};
+  static const char *const expected[] = {"7\n", "8\n", "9\n", "none\n"};
   char line[256];
   size_t i;
   int ok = 1;

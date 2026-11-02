@@ -1,12 +1,12 @@
 -- Formers F9 and F10: functions and dependent functions.
 def id : (n : Nat) -> Nat := fun (n : Nat) => n
 
-def next : Nat -> Nat := fun n => natAdd n 1
+def next : Nat -> Option Nat := fun n => natAdd n 1
 
-def twice : (f : (n : Nat) -> Nat) -> (n : Nat) -> Nat :=
-  fun (f : (n : Nat) -> Nat) (n : Nat) => f (f n)
+def twice : (f : (n : Nat) -> Option Nat) -> (n : Nat) -> Option Nat :=
+  fun (f : (n : Nat) -> Option Nat) (n : Nat) => bind (f n) f
 
-def four : Nat := twice next 2
+def four : Option Nat := twice next 2
 
 def pairOf : (x : Nat) -> (y : Nat) -> Prod Nat Nat := fun (x : Nat) (y : Nat) => pair x y
 
@@ -14,4 +14,4 @@ def poly : (A : Type 0) -> (x : A) -> A := fun (A : Type 0) (x : A) => x
 
 def three : Nat := poly Nat 3
 
-def applied : Nat := (fun (n : Nat) => natAdd n n) 6
+def applied : Option Nat := (fun (n : Nat) => natAdd n n) 6

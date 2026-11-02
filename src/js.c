@@ -29,6 +29,7 @@ typedef struct {
   IrScalar result; /* the result of the entry being written */
   int said;        /* 1 after a message on err */
   int ok;
+  int status; /* the entry takes st, an Int32Array(1) (Q-S3-22) */
 } Js;
 
 static const char *const RUNTIME[] = {
@@ -223,6 +224,10 @@ static const struct {
    "  if (b === null) return 0n;\n  const c = h2(h2(h2(h2(SC_TAG, px), r), big(head)), big(e));\n"
    "  const lhs = mulXY(SC_G, s);\n  const rhs = addXY(b, mulXY(a, c));\n"
    "  return lhs[0] === rhs[0] && lhs[1] === rhs[1] ? 1n : 0n;\n};"},
+  {IR_CALL_U256_MUL, "u256Mul", 0u,
+   "const u256Mul = (a, b) => {\n  const p = big(a) * big(b);\n  return p > M256 ? 0n : block(p);\n};"},
+  {IR_CALL_MUL_DIV, "mulDiv", 0u,
+   "const mulDiv = (a, b, d) => {\n  const e = big(d);\n  if (e === 0n) return 0n;\n  const q = (big(a) * big(b)) / e;\n  return q > M256 ? 0n : block(q);\n};"},
 };
 
 #define CALL_COUNT (sizeof CALLS / sizeof CALLS[0])
@@ -327,6 +332,7 @@ static unsigned calls_stmt(const IrStmt *st) {
   unsigned m = 0;
   switch (st->kind) {
     case IR_STMT_SET:
+    case IR_STMT_STATUS:
     case IR_STMT_RETURN:
       return calls_expr(st->expr);
     case IR_STMT_ALLOC:
@@ -426,6 +432,9 @@ static int emit_stmt(Js *o, const IrStmt *st, unsigned depth) {
       return emit_loop(o, st, 1, depth);
     case IR_STMT_TRAP:
       return indent(o, depth) && put(o, "trap();\n");
+    case IR_STMT_STATUS:
+      return o->status ? indent(o, depth) && put(o, "st[0] = Number(") && emit_expr(o, st->expr) && put(o, ");\n")
+                       : no_code(o, "statement", (unsigned)st->kind);
     case IR_STMT_RETURN:
       return indent(o, depth) && put(o, o->result == IR_SCALAR_U256 ? "return big(" : "return ") &&
              emit_expr(o, st->expr) && put(o, o->result == IR_SCALAR_U256 ? ");\n" : ";\n");
@@ -449,7 +458,8 @@ static int emit_func(Js *o, const IrFunc *fn, size_t index) {
   o->result = fn->result;
   ok = put(o, "\nfunction e") && put_u64(o, (uint64_t)index) && put(o, "(");
   for (i = 0; i < fn->param_count && ok; i++) ok = (i == 0 || put(o, ", ")) && put(o, "a") && put_u64(o, (uint64_t)i);
-  ok = ok && put(o, ") {\n  reset();\n");
+  o->status = fn->status;
+  ok = ok && (!fn->status || put(o, fn->param_count == 0 ? "st" : ", st")) && put(o, ") {\n  reset();\n");
   for (i = 0; i < fn->local_count && ok; i++) {
     conv = i < fn->param_count ? arg_name(fn->params[i]) : "";
     ok = conv == NULL ? no_code(o, "scalar", (unsigned)fn->params[i])
@@ -470,6 +480,7 @@ int js_write(const IrProgram *prog, FILE *out, FILE *err) {
   o.out = out;
   o.err = err;
   o.result = IR_SCALAR_NAT;
+  o.status = 0;
   o.said = 0;
   o.ok = 1;
   for (i = 0; i < prog->func_count; i++) used |= calls_block(&prog->funcs[i].body);

@@ -11,36 +11,37 @@ def r : U256 := 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd03641
 
 def rMinusOne : U256 := 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140u
 
-def oneG : Prod U256 U256 :=
+def oneG : Option (Prod U256 U256) :=
   ecMul (pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u) 1u
 
-def twoG : Prod U256 U256 :=
+def twoG : Option (Prod U256 U256) :=
   ecMul (pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u) 2u
 
-def threeG : Prod U256 U256 :=
+def threeG : Option (Prod U256 U256) :=
   ecMul (pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u) 3u
 
-def rMinusOneG : Prod U256 U256 :=
+def rMinusOneG : Option (Prod U256 U256) :=
   ecMul (pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u) rMinusOne
 
 -- r is the order of G, so r G is the point at infinity, (0, 0).
-def rG : Prod U256 U256 :=
+def rG : Option (Prod U256 U256) :=
   ecMul (pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u) r
 
 -- (Gx, p minus Gy) is the negation of G, so the sum is the point at infinity.
-def negSum : Prod U256 U256 :=
+def negSum : Option (Prod U256 U256) :=
   ecAdd (pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u) (pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u pMinusGy)
 
 -- Each trap row is an entry (Nat -> Flag, as eqTrap in words.lang), so `langc eval` gives the EVAL_OVERFLOW line.
 -- (1, 1) is not on the curve.
-def addBad : Nat -> Flag :=
-  fun (n : Nat) => u256Eq (first (ecAdd (pair 1u 1u) (pair 1u (toU256 n)))) 0u
+def addBad : Nat -> Option Flag :=
+  fun (n : Nat) => bind (ecAdd (pair 1u 1u) (pair 1u (toU256 n))) (fun (q : Prod U256 U256) => some (u256Eq (first q) 0u))
 
-def mulBad : Nat -> Flag := fun (n : Nat) => u256Eq (first (ecMul (pair 1u 1u) (toU256 n))) 0u
+def mulBad : Nat -> Option Flag :=
+  fun (n : Nat) => bind (ecMul (pair 1u 1u) (toU256 n)) (fun (q : Prod U256 U256) => some (u256Eq (first q) 0u))
 
 -- A coordinate at or above p traps: (p, 2) and (1, p + 2).
-def coordP : Nat -> Flag :=
-  fun (n : Nat) => u256Eq (first (ecAdd (pair p 2u) (pair 1u (toU256 n)))) 0u
+def coordP : Nat -> Option Flag :=
+  fun (n : Nat) => bind (ecAdd (pair p 2u) (pair 1u (toU256 n))) (fun (q : Prod U256 U256) => some (u256Eq (first q) 0u))
 
-def coordBig : Nat -> Flag :=
-  fun (n : Nat) => u256Eq (first (ecMul (pair 1u pPlusTwo) (toU256 n))) 0u
+def coordBig : Nat -> Option Flag :=
+  fun (n : Nat) => bind (ecMul (pair 1u pPlusTwo) (toU256 n)) (fun (q : Prod U256 U256) => some (u256Eq (first q) 0u))

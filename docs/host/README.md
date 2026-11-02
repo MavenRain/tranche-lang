@@ -5,40 +5,27 @@ One C99 program, `build/langc`, holds the parser, the checker, the
 evaluator, the lowering to a first-order IR and the Wasm writer.
 TinyCC builds it.
 
-## Shared files
+## Files
 
-This kit and `hosts/tcc-evm` share these files. `TCC_SHARED` in the root
-`Makefile` lists them:
+The repository has one kit:
 
 - the source: the front end (`src/front/`), `src/ir.h`, `src/target.h`
   and `src/main.c`
+- the writers: `src/wasm.c`, `src/js.c` and `src/wgsl.c`
 - the domain and its embed tool: `domain/` and `gen/`
 - the examples: `examples/`
-- the shared tests: `test/parse/`, `test/check/`, `test/eval/`, `test/ir/`,
-  `test/review.sh` and `test/fronttool.c`
-- `.gitignore`
-
-`make check` at the template root compares each shared entry in the two
-kits with `diff -r`. It fails when a shared file is different in the two
-kits or is missing from one kit. When you change a shared file, make the
-same change in `hosts/tcc-evm`.
-
-These files are specific to this kit:
-
-- the target file: `src/wasm.c`
-- the target test files: `test/wasmtool.c` (the Wasm runner on the
-  wasmtime C API) and `test/wasm/` (the prelude vectors)
+- the tests: `test/`, with the runners `test/wasmtool.c` (on the
+  wasmtime C API), `test/jstool.c` and `test/wgsltool.c`
 - the build and gate files: `Makefile`, `test/gate.sh` and `PIN`
-- the docs: `README.md`, `FORMERS.md` and `docs/CAPABILITY.md`
 
 ## Build
 
-From the template root:
+From the repository root:
 
 ```sh
-make -C hosts/tcc-wasm build
-make -C hosts/tcc-wasm check
-make -C hosts/tcc-wasm check-clang
+make build
+make check
+make check-clang
 ```
 
 `build` runs `tcc -run gen/embed.c` to copy `domain/domain.lang` into
@@ -68,6 +55,7 @@ The compiler enforces these rules:
 
 | Rule | Code | The compiler refuses |
 |---|---|---|
+| R0 | `REFUSE_PARTIAL` | a partial name (for example `div`, `mod` or `sub`), the `Option` result of a checked kit word where a plain value is wanted, or the literal 0 where a `NonZero` is wanted |
 | R1 | `REFUSE_DATA` | a `family` declaration in a program |
 | R2 | `REFUSE_AXIOM` | an `axiom` declaration |
 | R3 | `REFUSE_REC` | `def rec`, or a definition that refers to itself or to a later definition |
@@ -75,7 +63,7 @@ The compiler enforces these rules:
 | R4 | `REFUSE_TIME` | a time word (`now`, `block`, `timestamp`, `time`, `clock`, `epoch`) as a name or a use; the message says to count operations (`len r`, an `OpPos`) |
 | R1, O7 | `REFUSE_CELL` | a type constructor that is not one cell signature or one cocell signature, a cons-list name in place of a cell monad, or a sealed family that is not a cell monad |
 | - | `REFUSE_EVENT` | an event with more fields than the entry parameter limit, an event field that is not an ABI word type (`Nat`, `Flag`, `U256`, `Addr`), or a repeated event field |
-| D-9 | `REFUSE_HISTORY_WRITE` | a history field `h` that is not `(h t)` or `ADD (h t) e` with `ADD` as `u256Add` or `natAdd`, a history constructor without all of its arguments, or a definition with `State` in its type that refers to a name that the history rule does not check |
+| D-9 | `REFUSE_HISTORY_WRITE` | a history field `h` that is not `(h t)`, `ADD (h t) e`, or the variable of `bind (ADD (h t) e)`, with `ADD` as `u256Add` or `natAdd`, a history constructor without all of its arguments, or a definition with `State` in its type that refers to a name that the history rule does not check |
 | - | `REFUSE_KIT` | a kit item outside the base span (PLAN section 4); only the kit mode `langc --kit` admits it |
 | O7 | `REFUSE_LAW` | a law-only name (`decrypt`, `observe`, an elim, a fold or a projection of a sealed family) in a definition whose type is not a law (a `Path` or `Trunc1` codomain) |
 | - | `REFUSE_MAP` | a `Map` key type that is not `Nat`, `U256` or `Addr`, or a `Map` value type that is not `Nat`, `Flag`, `U256` or `Addr` |
@@ -99,8 +87,9 @@ build/langc [--kit] mcp
   prints one JSON line on stdout in place of `ok` or the diagnostic
   (`docs/CHECK-JSON.md`).
 - `eval` prints the normal form of `NAME`. Each argument is a decimal
-  number. When an entry traps, `eval` prints `trap` on stdout and an
-  `EVAL_OVERFLOW` line on stderr, and the exit status is 0.
+  number. For an Option result with a `Nat`, `Flag` or `U256` payload,
+  `eval` prints the payload of `some`, or `none`. It prints another
+  Option result as `some (...)` or `none` (S3, Q-S3-9).
 - `ir` prints the first-order IR. It has one `func` for each entry.
 - `abi` prints the name of each entry, one for each line.
 - `build` writes the Wasm module to `OUT`. On this target, `--runtime`
@@ -135,46 +124,56 @@ usage or IO error. A diagnostic on stderr has the form
 
 An entry is a top-level program definition whose declared type is `Nat`,
 `Flag`, or a first-order function from `Nat` and `Flag` arguments to a
-`Nat` or `Flag` result. `build` exports each entry by its name. Each
-parameter and the result is an `i64`. Other definitions are not exported.
+`Nat` or `Flag` result, or to an `Option` of one. `build` exports each
+entry by its name. Each parameter and the result is an `i64`. An entry
+with an `Option` result has one more parameter, the status word (see "No
+trap form"). Other definitions are not exported.
 
-`Nat` is an unsigned 64-bit integer. `natAdd` and `natMul` trap on an
-overflow past 2^64 - 1. `natSub` stops at 0. `Flag` is 0 or 1.
+`Nat` is an unsigned 64-bit integer. `natAdd` gives `none` on an
+overflow past 2^64 - 1, and `natSub` gives `none` when the second
+argument is larger than the first. `Flag` is 0 or 1.
 
 ## Compilation
 
 Compilation is partial evaluation. The compiler normalizes the body of
 each entry with the parameters as free variables. Types and universes erase.
-Proof contents erase, while their trap flags remain. A lambda stays only as the direct function argument of
+Proof contents erase. A lambda stays only as the direct function argument of
 `fold`, `unfold`, `map`, `bind`, `filter`, `either` or `option`. The
 lowering puts its body into a loop or a branch. The lowering refuses
-programs with three HOST-LIMIT codes (see `docs/CAPABILITY.md`) and one
-O6 code:
+programs with three HOST-LIMIT codes (see `docs/CAPABILITY.md`), one O6
+code and one bound code (Q-S3-28):
 
 - `REFUSE_RUNTIME_CLOSURE`: a function value must exist at run time.
 - `REFUSE_RUNTIME_TREE`: a fold walks a tree that exists only at run time.
 - `REFUSE_LOWER`: a construct does not lower.
 - `REFUSE_TARGET_SECRET`: the operation touches a secret key or a witness (O6).
+- `REFUSE_UNBOUNDED`: a loop has a trip count that exists only at run time; write it as `upTo K` with a Nat literal K.
 
-## Lazy traps
+## No trap form
 
-A trap is lazy. It stops a computation only when the computation needs
-the value. `langc eval` and the Wasm module agree on this rule. The
-lowering gives each value a word and a trap flag. A heap field keeps its
-word and its flag. The entry result is the only strict point: when its
-flag is set, the entry executes `unreachable`.
+A partial operation gives an `Option`: `none` where it has no result.
+`langc eval` prints `none` (Q-S3-9). The writers have no trap form for
+`none` (Q-S3-2 (c)): no `unreachable` in Wasm, no `throw` in JS and no
+WGSL trap status. An entry with an `Option` result writes a status word,
+0 for `none` and 1 for `some`. The result is valid only when the status
+is 1.
+
+- Wasm: the last parameter is an `i32`, the address of the status word
+  (the tools give 32). The `abi --text` line of the entry starts
+  `option[i32 status at 32] `, then the result shape. The JSON abi line
+  has `"option":true` after the result.
+- JS: the last parameter `st` is an `Int32Array`; the entry writes the
+  status to `st[0]`.
+- WGSL: the out row of an entry is [trap status, Option status, result].
+
+The tools preset the status word to 2, so an entry that writes no status
+gives a `bad` line.
 
 The lowering lowers a value one time in a block. The blocks in that
 block use the same result, but the two arms of a branch do not share
-results.
-
-Strict traps are not correct here. Normalization at compile time drops
-terms that are not read, for example `first (pair a b)` gives `a`. The
-evaluator also computes both arms of `flagIf`. A strict trap would fire
-in a term that the program does not use.
-
-Decision record: the kit builder (Claude) made this decision. The
-repository owner has not ruled on it.
+results. Normalization at compile time drops terms that are not read, for
+example `first (pair a b)` gives `a`, so a `none` in an unused term does
+not change the result.
 
 ## Wasm layout
 
@@ -183,12 +182,22 @@ repository owner has not ruled on it.
 - Function 0 is the internal allocator `alloc (bytes : i32) -> i64`. It
   increases the heap pointer. When a block does not fit, it calls
   `memory.grow`. When the memory cannot grow past 1 GiB, it traps.
-- Function 1 + K is entry K. Each entry first sets the heap pointer to 0,
-  so each call starts with an empty heap.
+- Functions 1 to P are the prelude functions that the module calls.
+  Function 1 + P + K is entry K. Each entry first sets the heap pointer to
+  40 (`WASM_HEAP_START`), so each call starts with an empty heap.
+- Address 0 holds a `U256` result (4 words). Address 32 holds the status
+  word of an entry with an `Option` result (`WASM_STATUS_AT`).
 - An entry traps when a `Flag` argument is larger than 1.
 - A word is 8 bytes. A heap block holds the tag in word 0, the word of
-  field K in word 1 + 2K and the trap flag of field K in word 2 + 2K.
+  field K in word 1 + 2K and a flag word in word 2 + 2K. The flag words
+  stay from the old lazy trap form. The curve prelude gives 0 when a flag
+  word of a point is not 0 (`point_flags` in `src/wasm.c`).
 - A tag switch is nested blocks and `br_table`. A tag out of range traps.
+- `u256Mul` and `mulDiv` lower on all three targets. Multiplication gives
+  `none` when the product does not fit; `mulDiv` divides the exact 512-bit
+  product by its `NonZero U256` divisor and gives `none` when the quotient
+  does not fit. `test/entrytest.c` checks their word boundaries, including
+  zero divisors handled through `nonZero`.
 
 ## Domain slot
 
@@ -198,35 +207,38 @@ what the domain holds and how to change it.
 
 ## Gate
 
-`make -C hosts/tcc-wasm check` prints these lines when it is GREEN:
+`make check` prints these lines when it is GREEN:
 
 | Line | What the gate does |
 |---|---|
-| `examples: 57 checked, 0 failed` | `langc check` accepts each `examples/*.lang` file |
+| `examples: 59 checked, 0 failed` | `langc check` accepts each `examples/*.lang` file |
 | `parse refusals: 19 checked` | each `test/parse` file fails with the code in `test/parse/expect.txt`; one file has 1100 nested parentheses |
-| `check refusals: 197 checked` | each `test/check` mutant fails with the code in `test/check/expect.txt`; the `TYPE_REFL` message shows both normal forms |
-| `evals: 245 checked` | `langc eval` gives each result in `test/eval/expect.txt` |
-| `build refusals: 9 checked` | `langc build examples/dao.lang -o OUT` exits 0, writes nothing on stdout and writes a valid module; each refused build exits 1 with its code and writes nothing on stdout; the rows include the transp row (`test/ir/transp.lang`, `REFUSE_LOWER`), three `REFUSE_TARGET_SECRET` rows (`test/ir/secret-key.lang`, `test/ir/secret-sign.lang`, O6, and `test/ir/secret-key.lang` with `--wgsl`), the elim row (`test/ir/tree-elim.lang`, `REFUSE_RUNTIME_TREE`, O26) and a guest-mode `REFUSE_KIT` row |
-| `ir: 56 lowered, 1 refused (HOST-LIMIT)` | `langc ir` lowers each example, with one `func` for each `abi --text` line derived independently from checked types; an example that does not lower refuses `REFUSE_LOWER` with a `HOST-LIMIT` detail |
+| `check refusals: 204 checked` | each `test/check` mutant fails with the code in `test/check/expect.txt`; the `TYPE_REFL` message shows both normal forms |
+| `evals: 275 checked` | `langc eval` gives each result in `test/eval/expect.txt` |
+| `build refusals: 10 checked` | `langc build examples/dao.lang -o OUT` exits 0, writes nothing on stdout and writes a valid module; each refused build exits 1 with its code and writes nothing on stdout; the rows include the transp row (`test/ir/transp.lang`, `REFUSE_LOWER`), three `REFUSE_TARGET_SECRET` rows (`test/ir/secret-key.lang`, `test/ir/secret-sign.lang`, O6, and `test/ir/secret-key.lang` with `--wgsl`), the elim row (`test/ir/tree-elim.lang`, `REFUSE_RUNTIME_TREE`, O26), a guest-mode `REFUSE_KIT` row and the `REFUSE_UNBOUNDED` row (`test/ir/unbounded.lang`, Q-S3-28: the message names `upTo K`, and `build/fronttool fix` with `test/ir/unbounded.fix` gives a file that `langc --kit build` builds) |
+| `ir: 56 lowered, 2 refused (HOST-LIMIT), 1 refused (REFUSE_TARGET_SECRET)` | `langc ir` lowers each example, with one `func` for each `abi --text` line derived independently from checked types; an example that does not lower refuses `REFUSE_LOWER` with a `HOST-LIMIT` detail (`examples/ballot.lang` and `examples/daokit.lang`: `sigOk` is a host proof check), and `examples/zk.lang` refuses `REFUSE_TARGET_SECRET` (`noSigner`, Q-S3-24) |
 | `wasm: 56 modules valid` | `langc build` writes a module for each lowered example, and `wasm-validate` and `wasm-objdump -x` accept it |
 | `wgsl: 56 modules written` | `langc build PROG --wgsl OUT.wgsl` writes a WGSL compute module for each lowered example; each build exits 0 and writes nothing on stdout |
 | `wgsl refusals: 2 checked` | each `--wgsl` usage row of `src/main.c` fails with its message: `--wgsl` with `--js`, and `--wgsl` with no path |
-| `wasm differential: 81 rows, 0 mismatches` | `build/wasmtool` (`test/wasmtool.c`, on the wasmtime C API) runs each `test/eval/expect.txt` row whose name is an entry of its file; each result is equal to the row result, and a trap is equal to a trap |
-| `js differential: 81 rows, 0 mismatches` | `langc build PROG --js OUT.mjs` writes an ES module for each lowered example, and `build/jstool` (`test/jstool.c`, node through `popen`) runs the rows of the `wasm differential` line; each result is equal to the row result, and a trap is equal to a trap |
+| `wasm differential: 93 rows, 0 mismatches` | `build/wasmtool` (`test/wasmtool.c`, on the wasmtime C API) runs each `test/eval/expect.txt` row whose name is an entry of its file; each result is equal to the row result, and `none` is equal to `none` |
+| `js differential: 93 rows, 0 mismatches` | `langc build PROG --js OUT.mjs` writes an ES module for each lowered example, and `build/jstool` (`test/jstool.c`, node through `popen`) runs the rows of the `wasm differential` line; each result is equal to the row result, and `none` is equal to `none` |
 | `test/ir wasm: 5 modules valid, 32 rows, 0 mismatches` | each `test/ir` module builds in `--kit` mode and is valid, and each row of the gate list gives the same result on `build/wasmtool` and in `langc --kit eval` |
 | `test/ir js: 32 rows, 0 mismatches` | each row of the `test/ir` gate list gives the same result on `build/jstool` and in `langc --kit eval` |
-| `json abi: 2 checked` | `langc --kit abi test/wasm/secp.lang` prints the JSON abi line (each kind is `nat`, `flag` or `u256`), and `abi` with a flag other than `--text` refuses `USAGE` |
-| `fmt canonical: 289 passed` | `langc fmt` gives the same bytes for each accepted `.lang` file of `domain/`, `examples/` and `test/*/` outside `test/fmt/` (the `test/json` rows `LEX_*` and `PARSE_*` are not in this check); each file that `langc fmt` refuses is in `test/fmt/refused.txt` (18 `test/parse` files), and no accepted file is |
-| `fmt round trip: 296 passed` | each accepted file (the 289 files and the 7 `test/fmt/*.lang` files) and its canonical text give the same `build/fronttool dump` (`test/fronttool.c`: one line for each node, with no line numbers and no comments) |
+| `entry boundary grid: 616 rows, evaluator/wasm/js passed` | `test/entrytest.c` checks Nat and Flag entries against independent C arithmetic |
+| `fixture boundary grid: 178 rows, wasm/js passed` | the fixture grid compares compiled results with the evaluator |
+| `word boundary grid: 23 rows, evaluator/wasm/js passed` | fixed arithmetic identities check U256 zero detection, multiplication and full-width division, including overflow and zero-divisor handling |
+| `json abi: 2 checked` | `langc --kit abi test/wasm/secp.lang` prints the JSON abi line (each kind is `nat`, `flag` or `u256`; an entry with an `Option` result has `"option":true`), and `abi` with a flag other than `--text` refuses `USAGE` |
+| `fmt canonical: 308 passed` | `langc fmt` gives the same bytes for each accepted `.lang` file of `domain/`, `examples/` and `test/*/` outside `test/fmt/` (the `test/json` rows `LEX_*` and `PARSE_*` are not in this check); each file that `langc fmt` refuses is in `test/fmt/refused.txt` (18 `test/parse` files), and no accepted file is |
+| `fmt round trip: 315 passed` | each accepted file (the 308 files and the 7 `test/fmt/*.lang` files) and its canonical text give the same `build/fronttool dump` (`test/fronttool.c`: one line for each node, with no line numbers and no comments) |
 | `fmt rows: 7 passed` | `langc fmt test/fmt/X.lang` gives the bytes of `test/fmt/X.canon` for each of the 7 rows |
 | `fmt check: 8 passed` | `langc fmt X.canon --check` exits 0 for each of the 7 rows, and `langc fmt test/fmt/check.lang --check` exits 1 with `test/fmt/check.lang:3: not canonical` |
-| `json rows: 20 passed` | for each `test/json/X.lang`, `langc check --json` exits 0 (the rows `ok` and `kit`) or 1 (each other row, whose first code is the file name up to the first dot), writes nothing on stderr, and gives the bytes of `test/json/X.json`; each refused row has `test/json/X.fix` (`docs/CHECK-JSON.md`) |
-| `json refusal codes: 13 of 13` | each `REFUSE_` code of `src/front/check.c` has a row `test/json/CODE.lang`, and the list of codes is not empty |
-| `json fixes: 18 passed` | `build/fronttool fix` applies each `test/json/X.fix` to its row, and `langc check --json` of the result exits 0 or gives a first code other than the code of the row |
+| `json rows: 28 passed` | for each `test/json/X.lang`, `langc check --json` exits 0 (the rows `ok`, `kit` and `kit.TAG`) or 1 (each other row, whose first code is the file name up to the first dot), writes nothing on stderr, and gives the bytes of `test/json/X.json`; each refused row has `test/json/X.fix` (`docs/CHECK-JSON.md`) |
+| `json refusal codes: 19 of 19` | each `REFUSE_` code of `src/front/check.c` and `src/front/lower.c` has a row `test/json/CODE.lang`, and the list of codes is not empty |
+| `json fixes: 24 passed` | `build/fronttool fix` applies each `test/json/X.fix` to its row, and `langc check --json` of the result exits 0 or gives a first code other than the code of the row |
 | `mcp rows: 9 passed` | for each `test/mcp/X.in`, `build/mcptool` runs `langc mcp` (`langc --kit mcp` when `X` starts with `kit-`) with the file on stdin: stdout gives the bytes of `test/mcp/X.out`, stderr is empty and the exit status is 0 |
 | `mcp negatives: 3 of 3` | `build/mcptool` exits 1 on each of 3 bad inputs: a copy of the `explain` row with one more byte in its `.out`, a row with no `.out`, and no row |
 | `mcp tools: 5 of 5` | each of the 5 tools (`check`, `fmt`, `eval`, `build`, `explain`) has a `tools/call` request in a `test/mcp/*.in` row |
-| `explain codes: 17 of 17` | the `REFUSE_` codes in `src` (not in `src/front/codes.c`) are the codes of the `src/front/codes.c` table, and for each code `langc explain CODE` exits 0 with one line `CODE: ...` and no stderr |
+| `explain codes: 19 of 19` | the `REFUSE_` codes in `src` (not in `src/front/codes.c`) are the codes of the `src/front/codes.c` table, and for each code `langc explain CODE` exits 0 with one line `CODE: ...` and no stderr |
 | `gate: 0 failures` | the sum of all failures |
 
 `make check` also runs `test/jstest.c` against an ES module with entries
@@ -238,16 +250,15 @@ The gate also checks the usage and IO exit codes, five `eval` refusals,
 (`REFUSE_RUNTIME_TREE`), the 11 entries of `test/ir/spine.lang`,
 `pick 2 4 9` = `trap` on Wasm, and the absence of em-dashes and en-dashes
 in the kit. The lowering computes a path of data that is stuck at compile
-time before it takes the end point of the path, so a trap in the path
-reaches the result: the 4 entries of `test/ir/proof-trap.lang` trap at
-18446744073709551615 on Wasm. `perl bin/doc-check.pl hosts/tcc-wasm` must report 0
-problems.
+time before it takes the end point of the path, so a `none` in the path
+reaches the result: the 4 entries of `test/ir/proof-trap.lang` give `none`
+at 18446744073709551615 on Wasm.
 
 `make check` also compares the 25 fixed rows in `test/wasm/traps.txt`
 against the evaluator, Wasm and the ES module, and the rows of
 `test/wasm/hash.txt` and `test/wasm/secp.txt` against Wasm and the ES
 module. They cover neutral path endpoints,
-trapped curve coordinates, and unused invalid curve results. It checks
+`none` curve coordinates, and unused invalid curve results. It checks
 that `abi --text` still reports checked signatures when lowering refuses
 `test/ir/transp.lang`.
 
@@ -261,7 +272,7 @@ prints these lines when it is GREEN:
 |---|---|
 | `wgsl valid: 52 modules` | the GPU compiles each entry of the WGSL module of each lowered example; the 4 modules of `test/wgsl/internal.txt` are not counted |
 | `wgsl known internal: 4 modules, 20 entries` | each entry of `test/wgsl/internal.txt` gives `GPUInternalError` (the Metal backend limit, `docs/VALIDATION.md` V15), and no other entry does |
-| `wgsl differential: 81 rows, 0 mismatches` | `build/wgsltool` runs the rows of the `wasm differential` line; each result is equal to the row result, and a trap is equal to a trap |
+| `wgsl differential: 81 rows, 0 mismatches` | `build/wgsltool` runs the rows of the `wasm differential` line; each result is equal to the row result, and `none` is equal to `none` |
 | `wgsl regressions: passed` | the rows of `test/wasm/hash.txt`, `test/wasm/secp.txt` and `test/wasm/traps.txt` on the WGSL module, so the gate prints this line three times |
 | `test/ir wgsl: 32 rows, 0 mismatches` | each row of the `test/ir` gate list gives the same result on `build/wgsltool` and in `langc --kit eval` |
 | `wgsl batch: 192 rows, 0 mismatches` | the batch proof check of `test/wgsl/batch.lang` on the rows of `test/wgsl/batch.txt`: 64 rows each for `sigOk`, `or0Ok` and `or1Ok` |

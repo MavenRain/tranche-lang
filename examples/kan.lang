@@ -17,7 +17,8 @@ def jReflNat : Path Nat (J Nat 0 motive 5 0 refl) 5 := JRefl Nat 0 motive 5
 
 def trNat : Path Nat 3 3 := fun (i : I) => transp (fun (_ : I) => Nat) i 3
 
-def evPi : Nat := transp (fun (_ : I) => Nat -> Nat) i0 (fun (n : Nat) => natAdd n 1) 4
+def evPi : Option Nat :=
+  transp (fun (_ : I) => Nat -> Option Nat) i0 (fun (n : Nat) => natAdd n 1) 4
 
 def evPair : Nat := first (transp (fun (_ : I) => Prod Nat Nat) i0 (pair 3 4))
 

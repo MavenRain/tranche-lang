@@ -9,8 +9,8 @@
 #include <string.h>
 
 typedef struct {
-  char call[128];
-  char want[32];
+  char call[512];
+  char want[96];
 } Row;
 
 static Row rows[616];
@@ -21,12 +21,12 @@ static const uint64_t values[] = {
   UINT64_C(4294967297), UINT64_MAX
 };
 
-static int add_row(const char *name, uint64_t a, uint64_t b, int two, int trap, uint64_t value) {
+static int add_row(const char *name, uint64_t a, uint64_t b, int two, int none, uint64_t value) {
   if (count == sizeof rows / sizeof rows[0]) return 0;
   Row *row = &rows[count++];
   if (two) snprintf(row->call, sizeof row->call, "%s %" PRIu64 " %" PRIu64, name, a, b);
   else snprintf(row->call, sizeof row->call, "%s %" PRIu64, name, a);
-  if (trap) snprintf(row->want, sizeof row->want, "trap\n");
+  if (none) snprintf(row->want, sizeof row->want, "none\n");
   else snprintf(row->want, sizeof row->want, "%" PRIu64 "\n", value);
   return 1;
 }
@@ -50,7 +50,7 @@ static int make_rows(void) {
       uint64_t b = values[j];
       int over = a > UINT64_MAX - b;
       if (!add_row("addPrice", a, b, 1, over, over ? 0 : a + b) ||
-          !add_row("discount", a, b, 1, 0, a < b ? 0 : a - b) ||
+          !add_row("discount", a, b, 1, a < b, a < b ? 0 : a - b) ||
           !add_row("ratio", a, b, 1, b == 0, b == 0 ? 0 : a / b) ||
           !add_row("remainder", a, b, 1, b == 0, b == 0 ? 0 : a % b)) return 0;
       for (unsigned flag = 0; flag < 2u; flag++) {
@@ -78,7 +78,7 @@ static int result(FILE *stream, const char *backend, size_t i, size_t *failures)
 static int check_eval(void) {
   size_t failures = 0;
   for (size_t i = 0; i < count; i++) {
-    char command[384], extra[256];
+    char command[1024], extra[256];
     snprintf(command, sizeof command,
              "build/langc --kit eval %s %s 2>build/entry-grid.err", program, rows[i].call);
     FILE *stream = popen(command, "r");
@@ -163,7 +163,7 @@ static int function_line(Function *fn, char *line) {
 
 static int grid_calls(const Function *fn, size_t param, char *call, size_t len) {
   if (param == fn->params) {
-    char command[384], extra[64];
+    char command[1024], extra[64];
     if (count == sizeof rows / sizeof rows[0]) return 0;
     Row *row = &rows[count++];
     snprintf(row->call, sizeof row->call, "%s", call);
@@ -214,6 +214,47 @@ static int fixture_rows(void) {
   return write_calls();
 }
 
+/* Fixed arithmetic identities supply an oracle independent of langc and
+   cover every word limb, the full product, overflow and a zero divisor. */
+static int word_rows(void) {
+#define MAX_WORD "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffu"
+#define MAX_RESULT "115792089237316195423570985008687907853269984665640564039457584007913129639935u\n"
+  static const Row cases[] = {
+    {"nonzeroFlag 0u", "0\n"},
+    {"nonzeroFlag 1u", "1\n"},
+    {"nonzeroFlag 18446744073709551616u", "1\n"},
+    {"nonzeroFlag 340282366920938463463374607431768211456u", "1\n"},
+    {"nonzeroFlag 6277101735386680763835789423207666416102355444464034512896u", "1\n"},
+    {"nonzeroFlag " MAX_WORD, "1\n"},
+    {"product 0u " MAX_WORD, "0u\n"},
+    {"product " MAX_WORD " 0u", "0u\n"},
+    {"product 1u " MAX_WORD, MAX_RESULT},
+    {"product 6u 7u", "42u\n"},
+    {"product 4294967295u 4294967295u", "18446744065119617025u\n"},
+    {"product 18446744073709551616u 18446744073709551616u", "340282366920938463463374607431768211456u\n"},
+    {"product 340282366920938463463374607431768211456u 340282366920938463463374607431768211456u", "none\n"},
+    {"product " MAX_WORD " 2u", "none\n"},
+    {"quotient 7u 3u 2u", "10u\n"},
+    {"quotient " MAX_WORD " " MAX_WORD " " MAX_WORD, MAX_RESULT},
+    {"quotient " MAX_WORD " 2u 2u", MAX_RESULT},
+    {"quotient " MAX_WORD " 2u 1u", "none\n"},
+    {"quotient 1u 1u 0u", "none\n"},
+    {"quotient 0u " MAX_WORD " " MAX_WORD, "0u\n"},
+    {"quotient 340282366920938463463374607431768211456u 340282366920938463463374607431768211456u " MAX_WORD, "1u\n"},
+    {"quotient 340282366920938463463374607431768211456u 340282366920938463463374607431768211456u 2u",
+     "57896044618658097711785492504343953926634992332820282019728792003956564819968u\n"},
+    {"quotient 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeu 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeu " MAX_WORD,
+     "115792089237316195423570985008687907853269984665640564039457584007913129639933u\n"}
+  };
+#undef MAX_WORD
+#undef MAX_RESULT
+  program = "test/wasm/word-options.lang";
+  count = sizeof cases / sizeof cases[0];
+  if (count > sizeof rows / sizeof rows[0]) return 0;
+  memcpy(rows, cases, sizeof cases);
+  return write_calls();
+}
+
 int main(int argc, char **argv) {
   static const char *const fixtures[] = {
     "examples/algebra.lang", "examples/equality.lang", "examples/formers.lang",
@@ -238,5 +279,10 @@ int main(int argc, char **argv) {
     legacy += count;
   }
   printf("fixture boundary grid: %zu rows, wasm/js%s passed\n", legacy, gpu ? "/wgsl" : "");
+  if (!word_rows() || !check_eval() || !check_targets(gpu)) {
+    fputs("FAIL word boundary grid\n", stderr);
+    return 1;
+  }
+  printf("word boundary grid: %zu rows, evaluator/wasm/js%s passed\n", count, gpu ? "/wgsl" : "");
   return 0;
 }

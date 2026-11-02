@@ -1,0 +1,1 @@
+{"diagnostics":[{"code":"REFUSE_UNBOUNDED","span":null,"message":"square: a fold over a Nat has a run-time trip count; write it as upTo K f z x with a Nat literal K (Q-S3-28)","fix":null}],"progress":{"parsed":1,"typed":1,"laws_discharged":0,"laws_total":0},"bounds":[],"fails":[]}

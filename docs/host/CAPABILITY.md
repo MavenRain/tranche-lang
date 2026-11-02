@@ -27,9 +27,15 @@ on 2026-10-08 on AArch64 Darwin.
 
 - `Nat` is an unsigned 64-bit integer. The lexer refuses a literal larger
   than 18446744073709551615 (`test/parse/nat-range.lang`).
-- `natAdd` and `natMul` trap on overflow. `natSub` stops at 0. A trap is
-  lazy: it stops a computation only when the computation needs it.
-  `README.md` gives the rule and the reason.
+- `natAdd` gives `none` on an overflow past 2^64 - 1. `natSub` gives
+  `none` when the second argument is larger than the first. Both give
+  `Option Nat`. There is no `natMul`.
+- A partial name (for example `div`, `mod` or `sub`) gives
+  `REFUSE_PARTIAL`, and the hint names the total form. The `Option`
+  result of a checked kit word where a plain value is wanted also gives
+  `REFUSE_PARTIAL`: use `option` or `bind`. The literal 0 where a
+  `NonZero` is wanted also gives `REFUSE_PARTIAL`: use `nonZero`
+  (Q-S3-1, Q-S3-21).
 - There is no text type. The lexer refuses `"` (`test/parse/string.lang`).
 - On Wasm, each value is a word and a trap flag. Only the entry result
   is strict.

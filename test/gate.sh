@@ -64,7 +64,7 @@ echo "kit-only refusals: $kit_only checked"
 
 # A refl refusal shows both normal forms.
 build/langc $(kit test/check/kit.txt bad-refl.lang) check test/check/bad-refl.lang 2>"$tmp/err" >/dev/null || true
-if ! rg -q -F 'the path at i1 is 1201, but the type needs 1200' "$tmp/err"; then
+if ! rg -q -F 'the path at i1 is some 1201, but the type needs some 1200' "$tmp/err"; then
   echo "FAIL bad-refl.lang: the message does not show both normal forms"
   fail=$((fail + 1))
 fi
@@ -80,8 +80,7 @@ fi
 echo "time hint: $time_hint checked"
 
 # Each line of test/eval/expect.txt is `FILE NAME [ARGS] => OUTPUT`. `langc eval`
-# must exit 0 and print OUTPUT. A trap also prints `langc: EVAL_OVERFLOW: NAME: ...`
-# on stderr.
+# must exit 0 and print OUTPUT.
 evals=0
 while IFS= read -r line; do
   want=${line#* => }
@@ -92,11 +91,11 @@ while IFS= read -r line; do
   status=0
   got=$(build/langc $(kit examples/kit.txt "$file.lang") eval "examples/$file.lang" "$name" "$@" 2>"$tmp/err") || status=$?
   first=$(head -n 1 "$tmp/err")
-  want_err=""
-  [ "$want" = "trap" ] && want_err="langc: EVAL_OVERFLOW: $name: "
+  has_err=0
+  [ ! -s "$tmp/err" ] || has_err=1
   evals=$((evals + 1))
-  case "$status|$got|$first" in
-    "0|$want|$want_err"*) ;;
+  case "$status|$got|$has_err" in
+    "0|$want|0") ;;
     *) echo "FAIL eval $file $name: want $want, got exit $status: $got $first"; fail=$((fail + 1)) ;;
   esac
 done <test/eval/expect.txt
@@ -185,7 +184,7 @@ build_refused() {
 }
 build_refused --kit REFUSE_RUNTIME_CLOSURE test/ir/closure.lang
 build_refused --kit REFUSE_RUNTIME_TREE test/ir/tree.lang
-build_refused --kit REFUSE_LOWER examples/zk.lang
+build_refused --kit REFUSE_TARGET_SECRET examples/zk.lang
 build_refused --kit REFUSE_LOWER test/ir/transp.lang
 build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-key.lang
 build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-sign.lang
@@ -198,6 +197,21 @@ build_refused --kit REFUSE_RUNTIME_TREE test/ir/tree-elim.lang
 case "$(head -n 1 "$tmp/err")" in
   "langc: REFUSE_RUNTIME_TREE: t: a fold over a tree of Word must exist at run time (HOST-LIMIT)") ;;
   *) echo "FAIL build test/ir/tree-elim.lang: want the Word tree message, got: $(head -n 1 "$tmp/err")"; fail=$((fail + 1)) ;;
+esac
+# Q-S3-28: a loop with a run-time trip count refuses REFUSE_UNBOUNDED, and
+# the message names upTo K. The check --json row is test/json/REFUSE_UNBOUNDED
+# (Q-S3-34); here test/ir/unbounded.fix gives the upTo 7 form, and it builds.
+build_refused --kit REFUSE_UNBOUNDED test/ir/unbounded.lang
+case "$(head -n 1 "$tmp/err")" in
+  "langc: REFUSE_UNBOUNDED: square: a fold over a Nat has a run-time trip count; write it as upTo K f z x with a Nat literal K (Q-S3-28)") ;;
+  *) echo "FAIL build test/ir/unbounded.lang: want the upTo K message, got: $(head -n 1 "$tmp/err")"; fail=$((fail + 1)) ;;
+esac
+status=0
+build/fronttool fix test/ir/unbounded.lang test/ir/unbounded.fix >"$tmp/unbounded-fixed.lang" 2>"$tmp/err" || status=$?
+[ "$status" -ne 0 ] || build/langc --kit build "$tmp/unbounded-fixed.lang" -o "$tmp/unbounded.wasm" >"$tmp/out" 2>"$tmp/err" || status=$?
+case "$status:$(wc -c <"$tmp/out" | tr -d ' ')" in
+  0:0) ;;
+  *) echo "FAIL build test/ir/unbounded.fix: want the fixed file to build, got exit $status: $(head -n 1 "$tmp/err")"; fail=$((fail + 1)) ;;
 esac
 # O24 (Q-S9-8): a def with scalar params and a family result has no target
 # form. The build skips it and writes one note for it on stderr.
@@ -220,10 +234,13 @@ echo "build refusals: $builds checked"
 # The IR (Q-S8-7): each example lowers, with one `func` line for each `abi
 # --text` line, and its module is valid (`wasm-validate`, `wasm-objdump -x`).
 # An example that does not lower must refuse REFUSE_LOWER with a HOST-LIMIT
-# detail (a host proof check, as examples/zk.lang; the secp256k1 ops of part B
-# lower). An example with a family-result def exits 0 with an O24 note.
+# detail (a host proof check, as examples/ballot.lang and examples/daokit.lang;
+# the secp256k1 ops of part B lower), or REFUSE_TARGET_SECRET for a def that
+# touches a secret key (examples/zk.lang noSigner, Q-S3-24). An example with a
+# family-result def exits 0 with an O24 note.
 irs=0
 host_limits=0
+secrets=0
 wasms=0
 wgsls=0
 for f in examples/*.lang; do
@@ -232,6 +249,7 @@ for f in examples/*.lang; do
   build/langc $k ir "$f" >"$tmp/ir.txt" 2>"$tmp/ir.err" || status=$?
   case "$status:$(head -n 1 "$tmp/ir.err")" in
     "1:langc: REFUSE_LOWER: "*"(HOST-LIMIT)"*) host_limits=$((host_limits + 1)); continue ;;
+    "1:langc: REFUSE_TARGET_SECRET: noSigner: "*) secrets=$((secrets + 1)); continue ;;
     0: | "0:langc: note: "*"(O24)") ;;
     *) echo "FAIL ir $f: exit $status: $(head -n 1 "$tmp/ir.err")"; fail=$((fail + 1)); continue ;;
   esac
@@ -258,7 +276,7 @@ for f in examples/*.lang; do
   fi
   wgsls=$((wgsls + 1))
 done
-echo "ir: $irs lowered, $host_limits refused (HOST-LIMIT)"
+echo "ir: $irs lowered, $host_limits refused (HOST-LIMIT), $secrets refused (REFUSE_TARGET_SECRET)"
 echo "wasm: $wasms modules valid"
 echo "wgsl: $wgsls modules written"
 # S10: the --wgsl usage rows of src/main.c: build takes one output flag, and
@@ -572,7 +590,7 @@ if [ "$gpu" = gpu ]; then
     fail=$((fail + 1))
   fi
 fi
-json_want='{"entries":[{"name":"addX","params":["u256","u256","u256","u256"],"result":"u256"},{"name":"addY","params":["u256","u256","u256","u256"],"result":"u256"},{"name":"mulX","params":["u256","u256","u256"],"result":"u256"},{"name":"mulY","params":["u256","u256","u256"],"result":"u256"},{"name":"sigOk","params":["u256","u256","u256","u256","u256"],"result":"flag"}]}'
+json_want='{"entries":[{"name":"addX","params":["u256","u256","u256","u256"],"result":"u256","option":true},{"name":"addY","params":["u256","u256","u256","u256"],"result":"u256","option":true},{"name":"mulX","params":["u256","u256","u256"],"result":"u256","option":true},{"name":"mulY","params":["u256","u256","u256"],"result":"u256","option":true},{"name":"sigOk","params":["u256","u256","u256","u256","u256"],"result":"flag"}]}'
 json_got=$(build/langc --kit abi test/wasm/secp.lang 2>&1) || json_got="exit $?"
 [ "$json_got" = "$json_want" ] || { echo "FAIL json abi: build/langc --kit abi test/wasm/secp.lang is not the JSON abi line"; fail=$((fail + 1)); }
 json_rc=0
@@ -709,15 +727,16 @@ echo "fmt check: $checks passed"
 # Each test/json/CODE.lang is a row: `langc check --json` writes
 # test/json/CODE.json on stdout and nothing on stderr. It exits 0 for ok and
 # kit, else it exits 1 and the first code is CODE. The rows kit,
-# REFUSE_HISTORY_WRITE, REFUSE_MAP and REFUSE_STATE run with --kit. Each
-# REFUSE_ code of src/front/check.c has a row. Each row other than ok and kit
+# REFUSE_HISTORY_WRITE, REFUSE_MAP, REFUSE_PARTIAL, REFUSE_STATE and the 5
+# lowering codes run with --kit. Each REFUSE_ code of src/front/check.c and
+# src/front/lower.c has a row (Q-S3-36). Each row other than ok and kit
 # has test/json/CODE.fix: `fronttool fix` applies it, and `langc check --json`
 # of the result exits 0 or gives a first code other than CODE.
 # A row CODE.TAG.lang is one more row for CODE (the code is the file name up
 # to the first dot); its .json and .fix go by the name CODE.TAG.
 json_kit() {
   case $1 in
-    kit | REFUSE_HISTORY_WRITE | REFUSE_MAP | REFUSE_STATE) echo --kit ;;
+    kit | REFUSE_HISTORY_WRITE | REFUSE_LOWER | REFUSE_MAP | REFUSE_PARTIAL | REFUSE_RUNTIME_CLOSURE | REFUSE_RUNTIME_TREE | REFUSE_STATE | REFUSE_TARGET_SECRET | REFUSE_UNBOUNDED) echo --kit ;;
   esac
 }
 jrows=0
@@ -746,16 +765,16 @@ for f in test/json/*.lang; do
 done
 jcodes=0
 jwant=0
-for code in $(rg -o --no-filename 'REFUSE_[A-Z_]+' src/front/check.c | sort -u); do
+for code in $(rg -o --no-filename 'REFUSE_[A-Z_]+' src/front/check.c src/front/lower.c | sort -u); do
   jwant=$((jwant + 1))
   if [ -f "test/json/$code.lang" ]; then
     jcodes=$((jcodes + 1))
   else
-    echo "FAIL json: no row test/json/$code.lang for the check code $code"
+    echo "FAIL json: no row test/json/$code.lang for the code $code"
     fail=$((fail + 1))
   fi
 done
-[ "$jwant" -gt 0 ] || { echo "FAIL json: no REFUSE_ code in src/front/check.c"; fail=$((fail + 1)); }
+[ "$jwant" -gt 0 ] || { echo "FAIL json: no REFUSE_ code in src/front/check.c and src/front/lower.c"; fail=$((fail + 1)); }
 jfixes=0
 for x in test/json/*.fix; do
   stem=$(basename "$x" .fix)

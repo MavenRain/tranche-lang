@@ -7,7 +7,10 @@ lines are the lowering to the IR.
 
 DONE means: `langc check` accepts the former, `langc eval` computes it,
 and `langc build` lowers it to Wasm when its value is first-order at run
-time. Types and universes erase on Wasm. Proof contents erase, while their trap flags remain.
+time. Types and universes erase on Wasm. Proof contents erase.
+`src/front/lower.c` is part of the build and of `check --json`.
+Partial operations return `Option`; a `none` result does not trap.
+The IR retains flag words as backend backstops.
 
 | ID | Former | Status | Where | Evidence |
 |---|---|---|---|---|
@@ -27,10 +30,14 @@ time. Types and universes erase on Wasm. Proof contents erase, while their trap 
 | F14 | Universes | DONE for Type 0 and Type 1, without cumulativity | `src/front/lower.c:1826` | `examples/universes.lang:6`, `test/check/universe.lang:1`, `test/check/universe-range.lang:1` |
 | F15 | Generic indexed family | PARTIAL: only the domain file declares an indexed family | `domain/domain.lang:371`, `domain/domain.lang:113` | `examples/bagorbit.lang:7`, `examples/formers.lang:24` |
 
-F4 and F6: a `FreeMon` value at run time is a linear spine when one side
-of each `fmMul` is a static leaf (O8). A fold over a linear spine lowers
-to a loop over the spine, and `fmChain` and `fmRun` lower to a loop
-(Q-S8-11). A constructor with two run-time recursive fields (for example
+F4 to F8: a walk over a run-time List or FreeMon refuses
+`REFUSE_UNBOUNDED` (Q-S3-28 to Q-S3-31). This includes List `map`, `bind`
+and `filter`, and `fmChain` and `fmRun`. Use `upTo K f z x`, with a Nat
+literal K, for a bounded fold over a run-time Nat or List. A run-time
+`unfold` limit also refuses `REFUSE_UNBOUNDED`; a literal limit lowers.
+
+A `FreeMon` value at run time is a linear spine when one side of each
+`fmMul` is a static leaf (O8). A constructor with two run-time recursive fields (for example
 `fmMul Nat m m`) makes a tree at run time. The lowering refuses it with
 `REFUSE_RUNTIME_TREE`.
 A fold over a closed tree works, because normalization folds it at

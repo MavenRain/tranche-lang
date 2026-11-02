@@ -235,7 +235,7 @@ static int json_abi_entry(const IrFunc *fn, int first, FILE *out) {
   for (c = (const unsigned char *)fn->name; *c != '\0'; c++) json_char(*c, out);
   fputs("\",\"params\":[", out);
   for (k = 0; k < fn->param_count; k++) fprintf(out, "%s\"%s\"", k == 0 ? "" : ",", json_shape(fn->params[k]));
-  fprintf(out, "],\"result\":\"%s\"}", json_shape(fn->result));
+  fprintf(out, "],\"result\":\"%s\"%s}", json_shape(fn->result), fn->status ? ",\"option\":true" : "");
   return 1;
 }
 
@@ -260,6 +260,7 @@ static int print_abi(Machine *machine, int json, FILE *out, FILE *err) {
     for (k = 0; k < entry.param_count; k++)
       params[k] = entry.param_flag[k] ? IR_SCALAR_FLAG : entry.param_u256[k] ? IR_SCALAR_U256 : IR_SCALAR_NAT;
     fn.result = entry.result_flag ? IR_SCALAR_FLAG : entry.result_u256 ? IR_SCALAR_U256 : IR_SCALAR_NAT;
+    fn.status = entry.result_option;
     if (!(json ? json_abi_entry(&fn, count++ == 0, out) : target_abi_line(&fn, out, err)))
       return 1;
   }
@@ -301,18 +302,148 @@ static int run_target(const Options *opt, Machine *machine, Diag *diag) {
   return 1;
 }
 
+#define FAIL_DEPTH_MAX 4000u
+
+/* The index of the family NAME, or the family count when it is absent. */
+static uint32_t family_named(const Machine *m, const char *name) {
+  uint32_t i;
+  for (i = 0; i < m->family_count; i++) {
+    if (strcmp(m->families[i].name, name) == 0)
+      return i;
+  }
+  return m->family_count;
+}
+
+/* Marks in SEEN each constructor of the family FAIL in V (C9c, Q-S3-35): in
+   the args of a canonical or stuck value, in the two parts of an
+   application, and under each binder, applied to the fresh variable at
+   LEVEL. A path abstraction is not walked. Returns 0 after a diagnostic. */
+static int fail_walk(Machine *m, const Value *v, uint32_t fail, unsigned char *seen, uint32_t level, unsigned depth) {
+  uint32_t i;
+  if (v == NULL)
+    return !m->diag->set;
+  if (depth > FAIL_DEPTH_MAX)
+    return diag_fail(m->diag, "EVAL_DEPTH", m->def, "the Fail scan is deeper than %u", FAIL_DEPTH_MAX);
+  switch (v->kind) {
+  case VAL_OP:
+  case VAL_STUCK:
+  case VAL_PATHP:
+    if (v->kind == VAL_OP && v->op == OP_CTOR && m->ctors[v->inst].family == fail)
+      seen[v->inst - m->families[fail].first_ctor] = 1;
+    for (i = 0; i < v->argc; i++) {
+      if (!fail_walk(m, v->args[i], fail, seen, level, depth + 1u))
+        return 0;
+    }
+    return 1;
+  case VAL_LAM:
+    return fail_walk(m, apply_value(m, v, val_var(m, level)), fail, seen, level + 1u, depth + 1u);
+  case VAL_APP:
+  case VAL_PAPP:
+    return fail_walk(m, v->dom, fail, seen, level, depth + 1u) && fail_walk(m, v->arg, fail, seen, level, depth + 1u);
+  case VAL_NAT:
+  case VAL_WORD:
+  case VAL_UNIV:
+  case VAL_PI:
+  case VAL_SIGMA:
+  case VAL_VAR:
+  case VAL_PLAM:
+  case VAL_IVAL:
+    return 1;
+  }
+  return 1;
+}
+
+/* The fails of check --json (C9c, Q-S3-35): each PROGRAM def whose type,
+   after its Nat, Flag and U256 params, is the Except family, with the Fail
+   constructors in its value on fresh variables, in the constructor order
+   of domain.lang. Returns 0 after a diagnostic. */
+static int fail_rows(Machine *m, FailRow **rows, size_t *row_count) {
+  uint32_t except = family_named(m, "Except");
+  uint32_t fail = family_named(m, "Fail");
+  FailRow *out = arena_alloc(m->arena, ((size_t)m->def_count + 1u) * sizeof *out);
+  unsigned char *seen;
+  const char **values;
+  const Value *t;
+  const Value *v;
+  uint32_t i;
+  uint32_t k;
+  uint32_t n;
+  size_t count;
+  *rows = out;
+  *row_count = 0;
+  if (out == NULL)
+    return diag_fail(m->diag, "OOM", NULL, "out of memory");
+  if (except == m->family_count || fail == m->family_count)
+    return 1;
+  for (i = 0; i < m->def_count; i++) {
+    if (m->defs[i].origin != ORIGIN_PROGRAM)
+      continue;
+    t = m->defs[i].type;
+    n = 0;
+    while (t != NULL && t->kind == VAL_PI && n < ENTRY_PARAMS_MAX
+           && (val_is(t->dom, OP_NAT) || val_is(t->dom, OP_FLAG) || val_is(t->dom, OP_U256))) {
+      t = closure_apply(m, t, val_var(m, n));
+      n++;
+    }
+    if (!val_is(t, OP_FAMILY) || t->inst != except)
+      continue;
+    m->def = m->defs[i].name;
+    m->fuel = EVAL_FUEL_STEPS;
+    v = def_value(m, i);
+    for (k = 0; k < n; k++)
+      v = v == NULL ? NULL : apply_value(m, v, val_var(m, k));
+    seen = arena_alloc(m->arena, (size_t)m->families[fail].ctor_count + 1u);
+    if (seen == NULL)
+      return diag_fail(m->diag, "OOM", NULL, "out of memory");
+    memset(seen, 0, (size_t)m->families[fail].ctor_count + 1u);
+    if (!fail_walk(m, v, fail, seen, n, 0u))
+      return 0;
+    count = 0;
+    for (k = 0; k < m->families[fail].ctor_count; k++)
+      count += seen[k];
+    values = arena_alloc(m->arena, (count + 1u) * sizeof *values);
+    if (values == NULL)
+      return diag_fail(m->diag, "OOM", NULL, "out of memory");
+    count = 0;
+    for (k = 0; k < m->families[fail].ctor_count; k++) {
+      if (seen[k])
+        values[count++] = m->ctors[m->families[fail].first_ctor + k].name;
+    }
+    out[*row_count].def = m->defs[i].name;
+    out[*row_count].values = values;
+    out[*row_count].value_count = count;
+    *row_count += 1u;
+  }
+  return 1;
+}
+
 /* langc [--kit] check --json PROG (S12 A2): exit 0 or 1 with the json_check
    line on stdout, and main prints no diag (Q-S12-7). After a lex or parse
-   error the progress stays all zero (Q-S12-6). OOM is exit 2 with no JSON. */
+   error the progress stays all zero (Q-S12-6). OOM is exit 2 with no JSON.
+   After a clean check, lower_program gives the bound of each entry and
+   drops its O24 notes, and a lowering refusal is the one diagnostic; then
+   fail_rows gives the fails (C9c, Q-S3-32 to Q-S3-35). */
 static int check_json(const Options *opt, Arena *arena, const char *text, size_t len, Diag *diag) {
   CheckProgress progress;
   DeclList decls;
   Machine machine;
+  IrProgram prog;
+  IrBound *bounds = NULL;
+  FailRow *fails = NULL;
+  size_t fail_count = 0;
+  size_t i;
   memset(&progress, 0, sizeof progress);
+  memset(&prog, 0, sizeof prog);
   int ok = front_load(arena, opt->prog_path, text, len, &decls, diag)
-      && check_program_progress(arena, &decls, &machine, diag, opt->mode, &progress);
+      && check_program_progress(arena, &decls, &machine, diag, opt->mode, &progress)
+      && lower_program(&machine, &prog, NULL);
+  bounds = ok ? arena_alloc(arena, (prog.func_count + 1u) * sizeof *bounds) : NULL;
+  ok = ok && (bounds != NULL || diag_fail(diag, "OOM", NULL, "out of memory"));
+  for (i = 0; ok && i < prog.func_count; i++)
+    ok = ir_bound(&machine, &prog.funcs[i], &bounds[i]);
+  ok = ok && fail_rows(&machine, &fails, &fail_count);
   if (!ok && diag->code != NULL && strcmp(diag->code, "OOM") == 0) return 2;
-  json_check(opt->out, opt->prog_path, diag, &progress);
+  json_check(opt->out, opt->prog_path, diag, &progress, &prog, bounds, fails, fail_count);
   return ok ? 0 : 1;
 }
 

@@ -32,7 +32,7 @@ def pointEq : (p : Prod U256 U256) -> (q : Prod U256 U256) -> Flag :=
 
 -- z P = A + e Q: 2 ecMul, 1 ecAdd.
 def holds : (p : Prod U256 U256) -> (a : Prod U256 U256) -> (q : Prod U256 U256) -> (z : U256) -> (e : U256) -> Flag :=
-  fun (p : Prod U256 U256) (a : Prod U256 U256) (q : Prod U256 U256) (z : U256) (e : U256) => pointEq (ecMul p z) (ecAdd a (ecMul q e))
+  fun (p : Prod U256 U256) (a : Prod U256 U256) (q : Prod U256 U256) (z : U256) (e : U256) => option flagNo (fun (l : Prod U256 U256) => option flagNo (fun (r : Prod U256 U256) => pointEq l r) (bind (ecMul q e) (fun (t : Prod U256 U256) => ecAdd a t))) (ecMul p z)
 
 def randChallenge : (ctx : U256) -> (pkx : U256) -> (pky : U256) -> (c1x : U256) -> (c1y : U256) -> (c2x : U256) -> (c2y : U256) -> (m : U256) -> (ax : U256) -> (ay : U256) -> (bx : U256) -> (by : U256) -> U256 :=
   fun (ctx : U256) (pkx : U256) (pky : U256) (c1x : U256) (c1y : U256) (c2x : U256) (c2y : U256) (m : U256) (ax : U256) (ay : U256) (bx : U256) (by : U256) => hash (hash (hash (hash (hash (hash (hash (hash (hash (hash (hash (hash randTag ctx) pkx) pky) c1x) c1y) c2x) c2y) m) ax) ay) bx) by
@@ -41,7 +41,7 @@ def orChallenge : (ctx : U256) -> (j : U256) -> (pkx : U256) -> (pky : U256) -> 
   fun (ctx : U256) (j : U256) (pkx : U256) (pky : U256) (c1x : U256) (c1y : U256) (c2x : U256) (c2y : U256) (a0x : U256) (a0y : U256) (b0x : U256) (b0y : U256) (a1x : U256) (a1y : U256) (b1x : U256) (b1y : U256) => hash (hash (hash (hash (hash (hash (hash (hash (hash (hash (hash (hash (hash (hash (hash (hash onehotTag ctx) j) pkx) pky) c1x) c1y) c2x) c2y) a0x) a0y) b0x) b0y) a1x) a1y) b1x) b1y
 
 def randWith : (pkx : U256) -> (pky : U256) -> (c1x : U256) -> (c1y : U256) -> (c2x : U256) -> (c2y : U256) -> (m : U256) -> (ax : U256) -> (ay : U256) -> (bx : U256) -> (by : U256) -> (z : U256) -> (e : U256) -> Flag :=
-  fun (pkx : U256) (pky : U256) (c1x : U256) (c1y : U256) (c2x : U256) (c2y : U256) (m : U256) (ax : U256) (ay : U256) (bx : U256) (by : U256) (z : U256) (e : U256) => flagIf (holds gen (pair ax ay) (pair c1x c1y) z e) (holds (pair pkx pky) (pair bx by) (ecAdd (pair c2x c2y) (ecMul negG m)) z e) flagNo
+  fun (pkx : U256) (pky : U256) (c1x : U256) (c1y : U256) (c2x : U256) (c2y : U256) (m : U256) (ax : U256) (ay : U256) (bx : U256) (by : U256) (z : U256) (e : U256) => flagIf (holds gen (pair ax ay) (pair c1x c1y) z e) (option flagNo (fun (q : Prod U256 U256) => holds (pair pkx pky) (pair bx by) q z e) (bind (ecMul negG m) (fun (t : Prod U256 U256) => ecAdd (pair c2x c2y) t))) flagNo
 
 def rand : (ctx : U256) -> (pkx : U256) -> (pky : U256) -> (c1x : U256) -> (c1y : U256) -> (c2x : U256) -> (c2y : U256) -> (m : U256) -> (ax : U256) -> (ay : U256) -> (bx : U256) -> (by : U256) -> (z : U256) -> Flag :=
   fun (ctx : U256) (pkx : U256) (pky : U256) (c1x : U256) (c1y : U256) (c2x : U256) (c2y : U256) (m : U256) (ax : U256) (ay : U256) (bx : U256) (by : U256) (z : U256) => randWith pkx pky c1x c1y c2x c2y m ax ay bx by z (randChallenge ctx pkx pky c1x c1y c2x c2y m ax ay bx by)
@@ -51,10 +51,10 @@ def rand : (ctx : U256) -> (pkx : U256) -> (pky : U256) -> (c1x : U256) -> (c1y 
 -- e - e0 when e0 <= e, else e1 - 1 = maxWord - (e0 - e) with e1 >= 1. Each
 -- u256Sub of a taken branch is exact.
 def splitOk : (e : U256) -> (e0 : U256) -> (e1 : U256) -> Flag :=
-  fun (e : U256) (e0 : U256) (e1 : U256) => flagIf (u256Le e0 e) (u256Eq (u256Sub e e0) e1) (flagIf (u256Le 1u e1) (u256Eq (u256Sub e1 1u) (u256Sub maxWord (u256Sub e0 e))) flagNo)
+  fun (e : U256) (e0 : U256) (e1 : U256) => flagIf (u256Le e0 e) (option flagNo (fun (d : U256) => u256Eq d e1) (u256Sub e e0)) (flagIf (u256Le 1u e1) (option flagNo (fun (f : Flag) => f) (bind (u256Sub e1 1u) (fun (d : U256) => map (fun (w : U256) => u256Eq d w) (bind (u256Sub e0 e) (fun (v : U256) => u256Sub maxWord v))))) flagNo)
 
 def slotWith : (pkx : U256) -> (pky : U256) -> (c1x : U256) -> (c1y : U256) -> (c2x : U256) -> (c2y : U256) -> (a0x : U256) -> (a0y : U256) -> (b0x : U256) -> (b0y : U256) -> (a1x : U256) -> (a1y : U256) -> (b1x : U256) -> (b1y : U256) -> (e0 : U256) -> (e1 : U256) -> (z0 : U256) -> (z1 : U256) -> (e : U256) -> Flag :=
-  fun (pkx : U256) (pky : U256) (c1x : U256) (c1y : U256) (c2x : U256) (c2y : U256) (a0x : U256) (a0y : U256) (b0x : U256) (b0y : U256) (a1x : U256) (a1y : U256) (b1x : U256) (b1y : U256) (e0 : U256) (e1 : U256) (z0 : U256) (z1 : U256) (e : U256) => flagIf (splitOk e e0 e1) (flagIf (holds gen (pair a0x a0y) (pair c1x c1y) z0 e0) (flagIf (holds (pair pkx pky) (pair b0x b0y) (pair c2x c2y) z0 e0) (flagIf (holds gen (pair a1x a1y) (pair c1x c1y) z1 e1) (holds (pair pkx pky) (pair b1x b1y) (ecAdd (pair c2x c2y) negG) z1 e1) flagNo) flagNo) flagNo) flagNo
+  fun (pkx : U256) (pky : U256) (c1x : U256) (c1y : U256) (c2x : U256) (c2y : U256) (a0x : U256) (a0y : U256) (b0x : U256) (b0y : U256) (a1x : U256) (a1y : U256) (b1x : U256) (b1y : U256) (e0 : U256) (e1 : U256) (z0 : U256) (z1 : U256) (e : U256) => flagIf (splitOk e e0 e1) (flagIf (holds gen (pair a0x a0y) (pair c1x c1y) z0 e0) (flagIf (holds (pair pkx pky) (pair b0x b0y) (pair c2x c2y) z0 e0) (flagIf (holds gen (pair a1x a1y) (pair c1x c1y) z1 e1) (option flagNo (fun (q : Prod U256 U256) => holds (pair pkx pky) (pair b1x b1y) q z1 e1) (ecAdd (pair c2x c2y) negG)) flagNo) flagNo) flagNo) flagNo
 
 def slot : (ctx : U256) -> (j : U256) -> (pkx : U256) -> (pky : U256) -> (c1x : U256) -> (c1y : U256) -> (c2x : U256) -> (c2y : U256) -> (a0x : U256) -> (a0y : U256) -> (b0x : U256) -> (b0y : U256) -> (a1x : U256) -> (a1y : U256) -> (b1x : U256) -> (b1y : U256) -> (e0 : U256) -> (e1 : U256) -> (z0 : U256) -> (z1 : U256) -> Flag :=
   fun (ctx : U256) (j : U256) (pkx : U256) (pky : U256) (c1x : U256) (c1y : U256) (c2x : U256) (c2y : U256) (a0x : U256) (a0y : U256) (b0x : U256) (b0y : U256) (a1x : U256) (a1y : U256) (b1x : U256) (b1y : U256) (e0 : U256) (e1 : U256) (z0 : U256) (z1 : U256) => slotWith pkx pky c1x c1y c2x c2y a0x a0y b0x b0y a1x a1y b1x b1y e0 e1 z0 z1 (orChallenge ctx j pkx pky c1x c1y c2x c2y a0x a0y b0x b0y a1x a1y b1x b1y)
@@ -72,11 +72,11 @@ def splitView : (env : Env) -> (s : State) -> (e : U256) -> (e0 : U256) -> (e1 :
   fun (env : Env) (s : State) (e : U256) (e0 : U256) (e1 : U256) => splitOk e e0 e1
 
 -- The sum of two ciphertext points: 1 ecAdd.
-def sumX : (env : Env) -> (s : State) -> (ux : U256) -> (uy : U256) -> (vx : U256) -> (vy : U256) -> U256 :=
-  fun (env : Env) (s : State) (ux : U256) (uy : U256) (vx : U256) (vy : U256) => first (ecAdd (pair ux uy) (pair vx vy))
+def sumX : (env : Env) -> (s : State) -> (ux : U256) -> (uy : U256) -> (vx : U256) -> (vy : U256) -> Option U256 :=
+  fun (env : Env) (s : State) (ux : U256) (uy : U256) (vx : U256) (vy : U256) => bind (ecAdd (pair ux uy) (pair vx vy)) (fun (q : Prod U256 U256) => some (first q))
 
-def sumY : (env : Env) -> (s : State) -> (ux : U256) -> (uy : U256) -> (vx : U256) -> (vy : U256) -> U256 :=
-  fun (env : Env) (s : State) (ux : U256) (uy : U256) (vx : U256) (vy : U256) => second (ecAdd (pair ux uy) (pair vx vy))
+def sumY : (env : Env) -> (s : State) -> (ux : U256) -> (uy : U256) -> (vx : U256) -> (vy : U256) -> Option U256 :=
+  fun (env : Env) (s : State) (ux : U256) (uy : U256) (vx : U256) (vy : U256) => bind (ecAdd (pair ux uy) (pair vx vy)) (fun (q : Prod U256 U256) => some (second q))
 
 -- The host words (closed: the evaluator computes the curve ops and hashes).
 def wctx : U256 := 0x5b2116058f9658b09c484c24d63c00cae04a8544e27a6f9346aeac7ef961fc7au

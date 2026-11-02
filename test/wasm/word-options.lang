@@ -1,0 +1,7 @@
+def nonzeroFlag : U256 -> Flag :=
+  fun (x : U256) => option flagNo (fun (d : NonZero U256) => flagYes) (nonZero x)
+
+def product : U256 -> U256 -> Option U256 := fun (a : U256) (b : U256) => u256Mul a b
+
+def quotient : U256 -> U256 -> U256 -> Option U256 :=
+  fun (a : U256) (b : U256) (d : U256) => bind (nonZero d) (fun (n : NonZero U256) => mulDiv a b n)

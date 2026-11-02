@@ -14,7 +14,7 @@ typedef struct {
   const char *meaning;
 } CodeRow;
 
-/* The number of rows: the 17 refusal codes of docs/host/README.md. */
+/* The number of rows: the 19 refusal codes of docs/host/README.md. */
 size_t code_count(void);
 /* Row INDEX in the order of docs/host/README.md, or NULL when INDEX is not
    below code_count(). */

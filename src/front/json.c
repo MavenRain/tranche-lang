@@ -61,7 +61,10 @@ static void put_fix(const char *path, const Diag *diag, FILE *out) {
   fputc('}', out);
 }
 
-void json_check(FILE *out, const char *path, const Diag *diag, const CheckProgress *progress) {
+void json_check(FILE *out, const char *path, const Diag *diag, const CheckProgress *progress,
+                const IrProgram *prog, const IrBound *bounds, const FailRow *fails, size_t fail_count) {
+  size_t i;
+  size_t k;
   fputs("{\"diagnostics\":[", out);
   if (diag->set) {
     /* The message is the text after `CODE: ` that diag_print writes. */
@@ -77,6 +80,24 @@ void json_check(FILE *out, const char *path, const Diag *diag, const CheckProgre
     put_fix(path, diag, out);
     fputc('}', out);
   }
-  fprintf(out, "],\"progress\":{\"parsed\":%d,\"typed\":%d,\"laws_discharged\":%d,\"laws_total\":%d}}\n",
+  fprintf(out, "],\"progress\":{\"parsed\":%d,\"typed\":%d,\"laws_discharged\":%d,\"laws_total\":%d},\"bounds\":[",
           progress->parsed, progress->typed, progress->laws_discharged, progress->laws_total);
+  for (i = 0; !diag->set && i < prog->func_count; i++) {
+    fputs(i == 0 ? "{\"entry\":" : ",{\"entry\":", out);
+    json_string(prog->funcs[i].name, out);
+    fprintf(out, ",\"ops\":%llu,\"stack\":%llu,\"memory\":%llu}", (unsigned long long)bounds[i].ops,
+            (unsigned long long)bounds[i].stack, (unsigned long long)bounds[i].memory);
+  }
+  fputs("],\"fails\":[", out);
+  for (i = 0; !diag->set && i < fail_count; i++) {
+    fputs(i == 0 ? "{\"def\":" : ",{\"def\":", out);
+    json_string(fails[i].def, out);
+    fputs(",\"values\":[", out);
+    for (k = 0; k < fails[i].value_count; k++) {
+      fputs(k == 0 ? "" : ",", out);
+      json_string(fails[i].values[k], out);
+    }
+    fputs("]}", out);
+  }
+  fputs("]}\n", out);
 }

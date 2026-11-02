@@ -1,0 +1,5 @@
+-- REFUSE_RUNTIME_TREE (Q-S3-34, Q-S3-36): a guest elim over a run-time
+-- Word (test/ir/tree-elim.lang). Its value is some 0 for each n, thus the
+-- fix gives some 0.
+def t : (n : Nat) -> Option Nat :=
+  fun (n : Nat) => elim (fun (k : Size) (v : Word k) => Option Nat) (fun (m : Size) => some 0) (fun (m : Size) (r : Word (szS (szS m))) (ihr : Option Nat) => ihr) (fun (m : Size) (inn : Word m) (ihi : Option Nat) (r : Word (szS m)) (ihr : Option Nat) => bind ihi (fun (a : Nat) => bind ihr (fun (b : Nat) => natAdd a b))) (fold (fun (w : Word (szS sz0)) => wordLift sz0 (wordNil sz0) w) (wordNil (szS sz0)) n)

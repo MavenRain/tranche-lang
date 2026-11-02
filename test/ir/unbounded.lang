@@ -1,0 +1,5 @@
+-- REFUSE_UNBOUNDED (Q-S3-28): the run-time square of C9a, a Nat fold whose
+-- trip count is the parameter n. test/ir/unbounded.fix gives the upTo 7
+-- form of examples/algebra.lang.
+def square : (n : Nat) -> Option Nat :=
+  fun (n : Nat) => fold (fun (acc : Option Nat) => bind acc (fun (a : Nat) => natAdd a n)) (some 0) n

@@ -1,0 +1,5 @@
+-- REFUSE_UNBOUNDED (Q-S3-28, Q-S3-34): a Nat fold whose trip count is the
+-- parameter n. check --json lowers the program, thus it refuses the fold.
+-- The fix gives the upTo 7 form of examples/algebra.lang.
+def square : (n : Nat) -> Option Nat :=
+  fun (n : Nat) => fold (fun (acc : Option Nat) => bind acc (fun (a : Nat) => natAdd a n)) (some 0) n

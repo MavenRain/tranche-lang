@@ -1,0 +1,6 @@
+-- C9c fails (Q-S3-35): pick has an Except result with 2 Fail values in
+-- its normal form, and one is an entry.
+def pick : (n : Nat) -> Except Nat :=
+  fun (n : Nat) => option (orFail Nat full none) (fun (m : Nat) => orFail Nat overflow (natAdd m 1)) (natAdd n 1)
+
+def one : Nat := 1

@@ -31,6 +31,12 @@ void group_to_words(U256 *x, U256 *y, const GroupPoint *p);
 void group_add(GroupPoint *out, const GroupPoint *a, const GroupPoint *b);
 /* K P for any 256-bit K. */
 void group_mul(GroupPoint *out, const GroupPoint *p, const U256 *k);
+/* The most points of one group_walk. */
+#define GROUP_WALK_MAX 256u
+/* OUT[i] = START + i STEP for each i below COUNT, with one inverse for all
+   (Montgomery's trick). COUNT is 1 to GROUP_WALK_MAX; any other COUNT
+   writes nothing. */
+void group_walk(GroupPoint *out, const GroupPoint *start, const GroupPoint *step, uint32_t count);
 void group_neg(GroupPoint *out, const GroupPoint *p);
 int group_eq(const GroupPoint *a, const GroupPoint *b);
 /* The point with x = X and the smaller of its two y (the bLSAG hash to the

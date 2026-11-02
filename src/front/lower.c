@@ -364,13 +364,13 @@ static int st_while(Low *l, Buf *b, const IrExpr *count, uint32_t local, const B
 }
 
 /* A new block [TAG, the word and the flag of each of the N operands]. */
-static int block_ops(Low *l, Buf *b, uint64_t tag, const Operand *ops, uint32_t n, Operand *out) {
+static int block_tag(Low *l, Buf *b, const IrExpr *tag, const Operand *ops, uint32_t n, Operand *out) {
   const IrExpr **fields = arena_alloc(l->m->arena, (2u * (size_t)n + 1u) * sizeof *fields);
   IrStmt *s = stmt_new(l, IR_STMT_ALLOC);
   uint32_t i;
   if (fields == NULL || s == NULL)
     return fields == NULL ? oom(l) : 0;
-  fields[0] = ex_const(l, tag);
+  fields[0] = tag;
   for (i = 0; i < n; i++) {
     fields[1u + 2u * i] = ops[i].w;
     fields[2u + 2u * i] = ops[i].f;
@@ -380,6 +380,11 @@ static int block_ops(Low *l, Buf *b, uint64_t tag, const Operand *ops, uint32_t 
   s->field_count = 2u * (size_t)n + 1u;
   *out = operand(ex_local(l, s->local), ex_const(l, 0));
   return fields[0] != NULL && emit(l, b, s);
+}
+
+/* block_tag with the constant TAG. */
+static int block_ops(Low *l, Buf *b, uint64_t tag, const Operand *ops, uint32_t n, Operand *out) {
+  return block_tag(l, b, ex_const(l, tag), ops, n, out);
 }
 
 /* The operand of field K of the block at ADDR. */
@@ -449,6 +454,10 @@ static const char *call_word(IrCall call) {
     return "u256_add";
   case IR_CALL_U256_SUB:
     return "u256_sub";
+  case IR_CALL_U256_MUL:
+    return "u256_mul";
+  case IR_CALL_MUL_DIV:
+    return "mul_div";
   case IR_CALL_U256_LE:
     return "u256_le";
   case IR_CALL_U256_EQ:
@@ -528,6 +537,11 @@ static void stmt_print(const IrStmt *s, FILE *out, unsigned depth) {
   switch (s->kind) {
   case IR_STMT_SET:
     fprintf(out, "l%u := ", (unsigned)s->local);
+    expr_print(s->expr, out, 0);
+    fputs("\n", out);
+    return;
+  case IR_STMT_STATUS:
+    fputs("status := ", out);
     expr_print(s->expr, out, 0);
     fputs("\n", out);
     return;
@@ -615,9 +629,194 @@ void ir_print(const IrProgram *prog, FILE *out) {
     fprintf(out, "func %s (", fn->name);
     for (k = 0; k < fn->param_count; k++)
       fprintf(out, "%s%s", k == 0 ? "" : ", ", scalar_word(fn->params[k]));
-    fprintf(out, ") -> %s, %u locals\n", scalar_word(fn->result), (unsigned)fn->local_count);
+    fprintf(out, ") -> %s%s, %u locals\n", fn->status ? "option " : "", scalar_word(fn->result), (unsigned)fn->local_count);
     block_print(&fn->body, out, 1u);
   }
+}
+
+/* The bound of an entry (C9c, Q-S3-32). Each sum and product stops at
+   UINT64_MAX. */
+static uint64_t sat_add(uint64_t a, uint64_t b) {
+  return a > UINT64_MAX - b ? UINT64_MAX : a + b;
+}
+
+static uint64_t sat_mul(uint64_t a, uint64_t b) {
+  return a != 0u && b > UINT64_MAX / a ? UINT64_MAX : a * b;
+}
+
+static uint64_t max_of(uint64_t a, uint64_t b) {
+  return a > b ? a : b;
+}
+
+/* The words of the result block of a prelude call (src/wasm.c new_block and
+   pair_code): a U256 or Digest block is 4 words, an EC pair 5, a scalar 0. */
+static uint64_t call_words(IrCall c) {
+  switch (c) {
+  case IR_CALL_U256_ADD:
+  case IR_CALL_U256_SUB:
+  case IR_CALL_TO_U256:
+  case IR_CALL_SHA256:
+  case IR_CALL_FE_ADD:
+  case IR_CALL_FE_SUB:
+  case IR_CALL_FE_MUL:
+  case IR_CALL_FE_INV:
+  case IR_CALL_U256_MUL:
+  case IR_CALL_MUL_DIV:
+    return 4u;
+  case IR_CALL_EC_ADD:
+  case IR_CALL_EC_MUL:
+    return 5u;
+  case IR_CALL_U256_LE:
+  case IR_CALL_U256_EQ:
+  case IR_CALL_SCHNORR_OK:
+    return 0u;
+  }
+  return 0u;
+}
+
+/* OUT gets B after it: the ops and the memory add, the stack is the larger. */
+static void add_bound(IrBound *out, const IrBound *b) {
+  out->ops = sat_add(out->ops, b->ops);
+  out->stack = max_of(out->stack, b->stack);
+  out->memory = sat_add(out->memory, b->memory);
+}
+
+/* OUT gets the larger of OUT and B, each count on its own (the larger arm). */
+static void max_bound(IrBound *out, const IrBound *b) {
+  out->ops = max_of(out->ops, b->ops);
+  out->stack = max_of(out->stack, b->stack);
+  out->memory = max_of(out->memory, b->memory);
+}
+
+/* The bound of the expression E: its nodes, the most words that it holds at
+   one time (the left operand before the right, the args in order) and the
+   result blocks of its prelude calls. */
+static void expr_bound(const IrExpr *e, IrBound *out) {
+  IrBound a;
+  IrBound b;
+  size_t i;
+  switch (e->kind) {
+  case IR_EXPR_CONST:
+  case IR_EXPR_LOCAL:
+    out->ops = 1u;
+    out->stack = 1u;
+    out->memory = 0u;
+    return;
+  case IR_EXPR_BINARY:
+    expr_bound(e->left, &a);
+    expr_bound(e->right, &b);
+    out->ops = sat_add(1u, sat_add(a.ops, b.ops));
+    out->stack = max_of(a.stack, sat_add(1u, b.stack));
+    out->memory = sat_add(a.memory, b.memory);
+    return;
+  case IR_EXPR_LOAD:
+    expr_bound(e->left, &a);
+    out->ops = sat_add(1u, a.ops);
+    out->stack = a.stack;
+    out->memory = a.memory;
+    return;
+  case IR_EXPR_CALL:
+    out->ops = 1u;
+    out->stack = 1u;
+    out->memory = call_words(e->call);
+    for (i = 0; i < e->arg_count; i++) {
+      expr_bound(e->args[i], &a);
+      out->ops = sat_add(out->ops, a.ops);
+      out->stack = max_of(out->stack, sat_add(i, a.stack));
+      out->memory = sat_add(out->memory, a.memory);
+    }
+    return;
+  }
+}
+
+static int block_bound(Machine *m, const char *name, const IrBlock *b, IrBound *out, unsigned depth);
+
+/* The bound of the statement S: 1 for S, its expressions, the larger arm of
+   an IF or a SWITCH, and K times the body of a loop with the count K. */
+static int stmt_bound(Machine *m, const char *name, const IrStmt *s, IrBound *out, unsigned depth) {
+  IrBound x;
+  IrBound arm;
+  size_t i;
+  out->ops = 1u;
+  out->stack = 0u;
+  out->memory = 0u;
+  if (depth > IR_PRINT_DEPTH_MAX)
+    return diag_fail(m->diag, "INTERNAL", name, "the IR is deeper than %u statements, thus it has no bound", IR_PRINT_DEPTH_MAX);
+  switch (s->kind) {
+  case IR_STMT_SET:
+  case IR_STMT_RETURN:
+  case IR_STMT_STATUS:
+    expr_bound(s->expr, &x);
+    add_bound(out, &x);
+    return 1;
+  case IR_STMT_ALLOC:
+    out->memory = s->field_count;
+    for (i = 0; i < s->field_count; i++) {
+      expr_bound(s->fields[i], &x);
+      add_bound(out, &x);
+    }
+    return 1;
+  case IR_STMT_IF:
+    expr_bound(s->expr, &x);
+    add_bound(out, &x);
+    if (!block_bound(m, name, &s->body, &x, depth + 1u) || !block_bound(m, name, &s->otherwise, &arm, depth + 1u))
+      return 0;
+    max_bound(&x, &arm);
+    add_bound(out, &x);
+    return 1;
+  case IR_STMT_SWITCH:
+    expr_bound(s->expr, &x);
+    add_bound(out, &x);
+    x.ops = 0u;
+    x.stack = 0u;
+    x.memory = 0u;
+    for (i = 0; i < s->arm_count; i++) {
+      if (!block_bound(m, name, &s->arms[i], &arm, depth + 1u))
+        return 0;
+      max_bound(&x, &arm);
+    }
+    add_bound(out, &x);
+    return 1;
+  case IR_STMT_REPEAT:
+  case IR_STMT_WHILE:
+    if (s->expr->kind != IR_EXPR_CONST)
+      return diag_fail(m->diag, "INTERNAL", name, "a loop count that is not a constant has no bound (lower_program refuses it first)");
+    expr_bound(s->expr, &x);
+    add_bound(out, &x);
+    if (!block_bound(m, name, &s->body, &x, depth + 1u))
+      return 0;
+    x.ops = sat_mul(s->expr->value, x.ops);
+    x.memory = sat_mul(s->expr->value, x.memory);
+    add_bound(out, &x);
+    return 1;
+  case IR_STMT_TRAP:
+    return 1;
+  }
+  return 1;
+}
+
+static int block_bound(Machine *m, const char *name, const IrBlock *b, IrBound *out, unsigned depth) {
+  IrBound x;
+  size_t i;
+  out->ops = 0u;
+  out->stack = 0u;
+  out->memory = 0u;
+  for (i = 0; i < b->count; i++) {
+    if (!stmt_bound(m, name, b->items[i], &x, depth))
+      return 0;
+    add_bound(out, &x);
+  }
+  return 1;
+}
+
+int ir_bound(Machine *m, const IrFunc *fn, IrBound *out) {
+  IrBound body;
+  if (!block_bound(m, fn->name, &fn->body, &body, 1u))
+    return 0;
+  out->ops = body.ops;
+  out->stack = sat_add(sat_add(fn->local_count, fn->status ? 1u : 0u), body.stack);
+  out->memory = body.memory;
+  return 1;
 }
 
 static int lower(Low *l, Buf *b, const Value *v, Operand *out);
@@ -710,6 +909,13 @@ static int refuse(Low *l, const char *what) {
   return diag_fail(l->m->diag, "REFUSE_LOWER", l->m->def, "%s does not lower (HOST-LIMIT)", what);
 }
 
+/* A loop whose trip count exists only at run time (tranche-lang S3,
+   Q-S3-28): LOOP names the loop word. The fix is the upTo K form with a Nat
+   literal K (Q-S3-30). */
+static int unbounded(Low *l, const char *loop) {
+  return diag_fail(l->m->diag, "REFUSE_UNBOUNDED", l->m->def, "%s has a run-time trip count; write it as upTo K f z x with a Nat literal K (Q-S3-28)", loop);
+}
+
 /* An operation on a secret key or a witness (the zk key, sign, witness, cast
    and prove operations) has no form on any target: a module is public
    (cairn-lang S9, Q-S9-3, PLAN O6). */
@@ -768,9 +974,11 @@ static int lower_canon(Low *l, Buf *b, const Value *v, Operand *out) {
   case OP_INTERVAL:
   case OP_SYSTEM:
   case OP_FIN:
+  case OP_NONZERO:
   case OP_NAT_IS_SET:
   case OP_U256_IS_SET:
   case OP_FLAG_IS_SET:
+  case OP_OPT_NAT_IS_SET:
     return give(l, out, 0, 0);
   case OP_FLAG_YES:
     return give(l, out, 1, 0);
@@ -799,6 +1007,8 @@ static int lower_canon(Low *l, Buf *b, const Value *v, Operand *out) {
   case OP_FOLD_NAT:
   case OP_FOLD_LIST:
   case OP_FOLD_FAMILY:
+  case OP_UPTO_NAT:
+  case OP_UPTO_LIST:
   case OP_UNFOLD:
   case OP_FILTER:
   case OP_WITNESS:
@@ -826,6 +1036,10 @@ static int lower_canon(Low *l, Buf *b, const Value *v, Operand *out) {
   case OP_EC_ADD:
   case OP_EC_MUL:
   case OP_SCHNORR_OK:
+  case OP_U256_MUL:
+  case OP_MUL_DIV:
+  case OP_NONZERO_OF:
+  case OP_NONZERO_VALUE:
     return closure(l);
   /* No form on the target: the refusals of lower_stuck. */
   case OP_TRANSP:
@@ -837,6 +1051,7 @@ static int lower_canon(Low *l, Buf *b, const Value *v, Operand *out) {
   case OP_KMAP_OF:
   case OP_KMAP_GET:
   case OP_KMAP_SET:
+  case OP_ELG_LOG:
   case OP_ZK_HP:
   case OP_ZK_KEY:
   case OP_ZK_DIGEST:
@@ -853,17 +1068,28 @@ static int lower_canon(Low *l, Buf *b, const Value *v, Operand *out) {
   return internal(l, "an unknown operation");
 }
 
-/* A Nat operation. CARRY: OP can overflow, and the overflow sets the flag. */
-static int nat_bin(Low *l, Buf *b, const Value *v, IrOp op, int carry, Operand *out) {
+/* A total Nat operation (natEq, natLe). */
+static int nat_bin(Low *l, Buf *b, const Value *v, IrOp op, Operand *out) {
   Operand x;
   Operand y;
-  const IrExpr *f;
   if (!lower(l, b, v->args[0], &x) || !lower(l, b, v->args[1], &y))
     return 0;
-  f = ex_or(l, x.f, y.f);
-  if (carry)
-    f = ex_or(l, f, ex_bin(l, op == IR_OP_ADD ? IR_OP_ADD_CARRY : IR_OP_MUL_CARRY, x.w, y.w));
-  return atoms(l, b, ex_bin(l, op, x.w, y.w), f, out);
+  return atoms(l, b, ex_bin(l, op, x.w, y.w), ex_or(l, x.f, y.f), out);
+}
+
+/* natAdd and natSub (Q-S3-23): an Option Nat block, none on the carry of
+   natAdd and when y > x for natSub. Field 0 keeps the lazy flag of the
+   arguments. */
+static int nat_opt(Low *l, Buf *b, const Value *v, int add, Operand *out) {
+  Operand x;
+  Operand y;
+  Operand o;
+  const IrExpr *tag;
+  if (!lower(l, b, v->args[0], &x) || !lower(l, b, v->args[1], &y))
+    return 0;
+  tag = add ? ex_bin(l, IR_OP_EQ, ex_bin(l, IR_OP_ADD_CARRY, x.w, y.w), ex_const(l, 0)) : ex_bin(l, IR_OP_LE, y.w, x.w);
+  return atoms(l, b, ex_bin(l, add ? IR_OP_ADD : IR_OP_SUB, x.w, y.w), ex_or(l, x.f, y.f), &o) &&
+         block_tag(l, b, atom(l, b, tag), &o, 1, out);
 }
 
 /* Field K of the block X, behind the guard on the flag of X. */
@@ -934,13 +1160,15 @@ static int two_cases(Low *l, Buf *b, const Value *v, uint32_t none_fields, Opera
 static const uint32_t LIST_REC[2] = {NO_REC, 1u};
 
 /* The locals of a walk: the reversed chain, its length, the trap flag of
-   the end, the node where the walk stopped, and the WHILE condition. */
+   the end, the node where the walk stopped, and the WHILE condition. CAP is
+   the literal bound of the length (SPINE_FUEL: no bound, Q-S3-28). */
 typedef struct {
   uint32_t rev;
   uint32_t count;
   uint32_t end;
   uint32_t cur;
   uint32_t cont;
+  uint64_t cap;
 } Walk;
 
 /* A fold into B -> B applied to B0 (cairn-lang S8, Q-S8-11): the fold V,
@@ -966,6 +1194,7 @@ static Walk walk_new(Low *l) {
   w.end = local_new(l);
   w.cur = local_new(l);
   w.cont = local_new(l);
+  w.cap = SPINE_FUEL;
   return w;
 }
 
@@ -994,12 +1223,13 @@ static int walk_step(Low *l, Buf *b, const Walk *w, uint32_t k) {
    at a node without one (CUR), or at a trapped field (END = 1). The cell of
    the last node comes first. With CH (a fold into B -> B), the leaf of a
    node with the tag NOW goes on ACC before the step. */
-static int walk_with(Low *l, Buf *b, Operand x, const uint32_t *rec, uint32_t n, const Chain *ch, Walk *w) {
+static int walk_fuel(Low *l, Buf *b, Operand x, const uint32_t *rec, uint32_t n, const Chain *ch, uint64_t cap, Walk *w) {
   IrBlock *arms = arena_alloc(l->m->arena, ((size_t)n + 1u) * sizeof *arms);
   Buf body = buf_under(b);
   Buf arm;
   uint32_t i;
   *w = walk_new(l);
+  w->cap = cap;
   if (arms == NULL)
     return oom(l);
   for (i = 0; i < n; i++) {
@@ -1013,11 +1243,22 @@ static int walk_with(Low *l, Buf *b, Operand x, const uint32_t *rec, uint32_t n,
   return set(l, b, w->rev, ex_const(l, 0)) && set(l, b, w->count, ex_const(l, 0)) && set(l, b, w->end, x.f) &&
          set(l, b, w->cur, x.w) && set(l, b, w->cont, ex_bin(l, IR_OP_EQ, x.f, ex_const(l, 0))) &&
          st_switch(l, &body, ex_load(l, ex_local(l, w->cur), 0), arms, n) &&
-         st_while(l, b, ex_const(l, SPINE_FUEL), w->cont, &body);
+         (cap == SPINE_FUEL || set(l, &body, w->cont,
+                                   ex_bin(l, IR_OP_MUL, ex_local(l, w->cont),
+                                          ex_bin(l, IR_OP_LT, ex_local(l, w->count), ex_const(l, cap))))) &&
+         st_while(l, b, ex_const(l, cap), w->cont, &body);
 }
 
-static int walk(Low *l, Buf *b, Operand x, const uint32_t *rec, uint32_t n, Walk *w) {
-  return walk_with(l, b, x, rec, n, NULL, w);
+/* walk_fuel with no capacity: a run-time trip count, so the walk of the
+   loop word LOOP refuses REFUSE_UNBOUNDED (Q-S3-31); the lowering stays
+   behind the refusal. A capacity CAP < SPINE_FUEL (upTo, Q-S3-29) also stops
+   the walk after CAP cells and is the literal WHILE fuel. */
+static int walk_with(Low *l, Buf *b, Operand x, const uint32_t *rec, uint32_t n, const Chain *ch, const char *loop, Walk *w) {
+  return unbounded(l, loop) && walk_fuel(l, b, x, rec, n, ch, SPINE_FUEL, w);
+}
+
+static int walk(Low *l, Buf *b, Operand x, const uint32_t *rec, uint32_t n, const char *loop, Walk *w) {
+  return walk_with(l, b, x, rec, n, NULL, loop, w);
 }
 
 /* The start of a pass over the chain of W: NODE := word 1 of the cell. */
@@ -1033,9 +1274,17 @@ static int chain_head(Low *l, Buf *body, const Walk *w, Operand *h) {
   return chain_node(l, body, w, &node) && field_at(l, body, node, 0, h);
 }
 
-/* The end of a pass: REV := the next cell, and REPEAT COUNT {BODY}. */
+/* The end of a pass: REV := the next cell, and I := 0, then REPEAT CAP {IF
+   I < COUNT {BODY}; I := I + 1}, CAP a literal (Q-S3-28). A walk without a
+   cap (SPINE_FUEL) refuses REFUSE_UNBOUNDED. */
 static int chain_end(Low *l, Buf *b, const Walk *w, Buf *body) {
-  return set(l, body, w->rev, ex_load(l, ex_local(l, w->rev), 3)) && st_repeat(l, b, ex_local(l, w->count), body);
+  uint32_t i = local_new(l);
+  Buf loop = buf_under(b);
+  Buf skip = buf_under(b);
+  return (w->cap != SPINE_FUEL || unbounded(l, "a pass over a spine")) &&
+         set(l, body, w->rev, ex_load(l, ex_local(l, w->rev), 3)) && set(l, b, i, ex_const(l, 0)) &&
+         if_flag(l, &loop, ex_bin(l, IR_OP_LT, ex_local(l, i), ex_local(l, w->count)), body, &skip) &&
+         set(l, &loop, i, ex_bin(l, IR_OP_ADD, ex_local(l, i), ex_const(l, 1))) && st_repeat(l, b, ex_const(l, w->cap), &loop);
 }
 
 /* OUT := a trap tail when the flag local END is 1, else nil. */
@@ -1065,7 +1314,7 @@ static int fold_list(Low *l, Buf *b, const Value *v, Operand *out) {
   Buf body = buf_under(b);
   *out = slot_get(l, acc);
   args[1] = slot_get(l, acc);
-  return lower(l, b, v->args[2], &x) && walk(l, b, x, LIST_REC, 2u, &w) && lower_into(l, &in, v->args[1], acc) &&
+  return lower(l, b, v->args[2], &x) && walk(l, b, x, LIST_REC, 2u, "a fold over a list", &w) && lower_into(l, &in, v->args[1], acc) &&
          guard(l, b, ex_local(l, w.end), acc, &in) && chain_head(l, &body, &w, &args[0]) &&
          apply_into(l, &body, v->args[0], args, 2u, acc) && chain_end(l, b, &w, &body);
 }
@@ -1079,7 +1328,7 @@ static int list_map(Low *l, Buf *b, const Value *v, Operand *out) {
   Slot ys = slot_new(l);
   Buf body = buf_under(b);
   *out = slot_get(l, res);
-  return lower(l, b, v->args[1], &x) && walk(l, b, x, LIST_REC, 2u, &w) && tail_init(l, b, w.end, res) &&
+  return lower(l, b, v->args[1], &x) && walk(l, b, x, LIST_REC, 2u, "a map", &w) && tail_init(l, b, w.end, res) &&
          chain_head(l, &body, &w, &h) && apply_into(l, &body, v->args[0], &h, 1u, ys) &&
          prepend(l, &body, slot_get(l, ys), res) && chain_end(l, b, &w, &body);
 }
@@ -1098,9 +1347,9 @@ static int list_bind(Low *l, Buf *b, const Value *v, Operand *out) {
   Buf inner = buf_under(&body);
   Buf none = buf_under(&body);
   *out = slot_get(l, res);
-  return lower(l, b, v->args[0], &x) && walk(l, b, x, LIST_REC, 2u, &w) && tail_init(l, b, w.end, res) &&
+  return lower(l, b, v->args[0], &x) && walk(l, b, x, LIST_REC, 2u, "a bind", &w) && tail_init(l, b, w.end, res) &&
          chain_head(l, &body, &w, &h) && apply_into(l, &body, v->args[1], &h, 1u, rs) &&
-         walk(l, &body, slot_get(l, rs), LIST_REC, 2u, &u) && guard(l, &body, ex_local(l, u.end), res, &none) &&
+         walk(l, &body, slot_get(l, rs), LIST_REC, 2u, "a bind", &u) && guard(l, &body, ex_local(l, u.end), res, &none) &&
          chain_head(l, &inner, &u, &y) && prepend(l, &inner, y, res) && chain_end(l, &body, &u, &inner) &&
          chain_end(l, b, &w, &body);
 }
@@ -1119,7 +1368,7 @@ static int list_filter(Low *l, Buf *b, const Value *v, Operand *out) {
   Buf drop = buf_under(&body);
   Buf test = buf_under(&body);
   *out = slot_get(l, res);
-  return lower(l, b, v->args[1], &x) && walk(l, b, x, LIST_REC, 2u, &w) && tail_init(l, b, w.end, res) &&
+  return lower(l, b, v->args[1], &x) && walk(l, b, x, LIST_REC, 2u, "a filter", &w) && tail_init(l, b, w.end, res) &&
          chain_head(l, &body, &w, &h) && apply_into(l, &body, v->args[0], &h, 1u, ts) && prepend(l, &keep, h, res) &&
          if_flag(l, &test, ex_local(l, ts.w), &keep, &drop) && guard(l, &body, ex_local(l, ts.f), res, &test) &&
          chain_end(l, b, &w, &body);
@@ -1157,7 +1406,8 @@ static int unfold_step(Low *l, Buf *b, const Walk *w, const Value *g, Slot seed)
 }
 
 /* UNFOLD G LIMIT SEED. The WHILE pushes the items on a chain, then a pass
-   from the last item builds the list. A trap limit gives a trap. */
+   from the last item builds the list. A run-time LIMIT refuses
+   REFUSE_UNBOUNDED (Q-S3-28); the literal LIMIT is the cap of the pass. */
 static int unfold(Low *l, Buf *b, const Value *v, Operand *out) {
   Operand lim;
   Operand h;
@@ -1168,6 +1418,9 @@ static int unfold(Low *l, Buf *b, const Value *v, Operand *out) {
   Buf step = buf_under(&in);
   Buf body = buf_under(&in);
   *out = slot_get(l, res);
+  if (v->args[1]->kind != VAL_NAT)
+    return unbounded(l, "an unfold");
+  w.cap = v->args[1]->nat;
   return lower(l, b, v->args[1], &lim) && set(l, &in, w.rev, ex_const(l, 0)) && set(l, &in, w.count, ex_const(l, 0)) &&
          set(l, &in, w.end, ex_const(l, 0)) && set(l, &in, w.cont, ex_const(l, 1)) &&
          lower_into(l, &in, v->args[2], seed) && unfold_step(l, &step, &w, v->args[0], seed) &&
@@ -1277,7 +1530,7 @@ static int family_spine(Low *l, Buf *b, const Value *v, const uint32_t *rec, uin
   Buf in = buf_under(b);
   Buf body = buf_under(b);
   *out = slot_get(l, acc);
-  return lower(l, b, v->args[v->argc - 1u], &x) && walk(l, b, x, rec, n, &w) &&
+  return lower(l, b, v->args[v->argc - 1u], &x) && walk(l, b, x, rec, n, "a fold over a family", &w) &&
          fam_switch(l, &in, ex_local(l, w.cur), v, rec, n, 0, acc) && guard(l, b, ex_local(l, w.end), acc, &in) &&
          chain_node(l, &body, &w, &node) && fam_switch(l, &body, node, v, rec, n, 1, acc) && chain_end(l, b, &w, &body);
 }
@@ -1455,7 +1708,7 @@ static int chain_fold(Low *l, Buf *b, const Value *app, Operand *out) {
   ch.acc = slot_new(l);
   *out = slot_get(l, ch.acc);
   return lower_into(l, b, app->arg, ch.acc) && lower(l, b, v->args[v->argc - 1u], &t) &&
-         walk_with(l, b, t, recs, ch.n, &ch, &w) && leaf_step(l, &in, ex_local(l, w.cur), &ch) &&
+         walk_with(l, b, t, recs, ch.n, &ch, "a fold over a family", &w) && leaf_step(l, &in, ex_local(l, w.cur), &ch) &&
          guard(l, b, ex_local(l, w.end), ch.acc, &in) && chain_node(l, &body, &w, &node) &&
          chain_pass(l, &body, node, &ch) && chain_end(l, b, &w, &body);
 }
@@ -1526,7 +1779,8 @@ static int not_option(Low *l, Buf *b, const Value *v, Operand *out) {
   return v->inst == CARRIER_LIST ? list_filter(l, b, v, out) : internal(l, "a filter over a sum");
 }
 
-/* ACC := Z, then ACC := STEP ACC, N times. */
+/* ACC := Z, then ACC := STEP ACC, N times. A run-time N refuses
+   REFUSE_UNBOUNDED (Q-S3-28); eval unrolls a literal N. */
 static int fold_nat(Low *l, Buf *b, const Value *v, Operand *out) {
   Operand n;
   Operand a;
@@ -1535,6 +1789,8 @@ static int fold_nat(Low *l, Buf *b, const Value *v, Operand *out) {
   Buf body = buf_under(&in);
   *out = slot_get(l, acc);
   a = slot_get(l, acc);
+  if (v->args[2]->kind != VAL_NAT)
+    return unbounded(l, "a fold over a Nat");
   return lower(l, b, v->args[2], &n) && lower_into(l, &in, v->args[1], acc) && apply_into(l, &body, v->args[0], &a, 1, acc) &&
          st_repeat(l, &in, n.w, &body) && guard(l, b, n.f, acc, &in);
 }
@@ -1564,9 +1820,8 @@ static int nat_divmod(Low *l, Buf *b, const Value *v, IrOp op, Operand *out) {
   return atoms(l, b, ex_bin(l, op, x.w, ex_bin(l, IR_OP_ADD, y.w, zero)), ex_or(l, zero, ex_or(l, x.f, y.f)), out);
 }
 
-/* CALL on the N arguments of V, behind the guard on their flags. ZERO: the
-   result 0 is a trap (a U256 overflow or curve error; never a heap block). */
-static int call_op(Low *l, Buf *b, const Value *v, IrCall call, uint32_t n, int zero, Operand *out) {
+/* CALL on the N arguments of V, behind the guard on their flags. */
+static int call_op(Low *l, Buf *b, const Value *v, IrCall call, uint32_t n, Operand *out) {
   const IrExpr **args = arena_alloc(l->m->arena, ((size_t)n + 1u) * sizeof *args);
   const IrExpr *f = ex_const(l, 0);
   const IrExpr *w;
@@ -1584,8 +1839,122 @@ static int call_op(Low *l, Buf *b, const Value *v, IrCall call, uint32_t n, int 
     f = ex_or(l, f, x.f);
   }
   w = atom(l, &in, ex_call(l, call, args, n));
-  return w != NULL && store(l, &in, res, operand(w, zero ? ex_bin(l, IR_OP_EQ, w, ex_const(l, 0)) : ex_const(l, 0))) &&
+  return w != NULL && store(l, &in, res, operand(w, ex_const(l, 0))) &&
          guard(l, b, f, res, &in);
+}
+
+/* An Option from CALL on the N arguments of V (Q-S3-23), behind the guard
+   on their flags. LE: the tag is U256_LE (second, first) (u256Sub); else
+   the result 0 is none (a U256 overflow, a curve error or a quotient that
+   does not fit; never a heap block). */
+static int call_opt(Low *l, Buf *b, const Value *v, IrCall call, uint32_t n, int le, Operand *out) {
+  const IrExpr **args = arena_alloc(l->m->arena, ((size_t)n + 3u) * sizeof *args);
+  const IrExpr *f = ex_const(l, 0);
+  const IrExpr *w;
+  const IrExpr *tag;
+  Operand x;
+  Operand o;
+  Operand opt;
+  Slot res = slot_new(l);
+  Buf in = buf_under(b);
+  uint32_t i;
+  *out = slot_get(l, res);
+  if (args == NULL)
+    return oom(l);
+  for (i = 0; i < n; i++) {
+    if (!lower(l, b, v->args[i], &x))
+      return 0;
+    args[i] = x.w;
+    f = ex_or(l, f, x.f);
+  }
+  w = atom(l, &in, ex_call(l, call, args, n));
+  if (w == NULL)
+    return 0;
+  if (le) {
+    args[n] = args[1];
+    args[n + 1u] = args[0];
+  }
+  tag = le ? ex_call(l, IR_CALL_U256_LE, args + n, 2) : ex_bin(l, IR_OP_EQ, ex_bin(l, IR_OP_EQ, w, ex_const(l, 0)), ex_const(l, 0));
+  o = operand(w, ex_const(l, 0));
+  return block_tag(l, &in, atom(l, &in, tag), &o, 1, &opt) && store(l, &in, res, opt) && guard(l, b, f, res, &in);
+}
+
+/* nonZero x (Q-S3-23): an Option NonZero block, none when x is 0. */
+static int nonzero_opt(Low *l, Buf *b, const Value *v, Operand *out) {
+  Operand x;
+  const IrExpr *bits;
+  uint32_t i;
+  if (!lower(l, b, v->args[0], &x))
+    return 0;
+  bits = v->inst ? ex_load(l, x.w, 0) : x.w;
+  for (i = 1; v->inst && i < 4u; i++)
+    bits = ex_bin(l, IR_OP_OR, bits, ex_load(l, x.w, i));
+  return block_tag(l, b, atom(l, b, ex_bin(l, IR_OP_EQ, ex_bin(l, IR_OP_EQ, bits, ex_const(l, 0)), ex_const(l, 0))), &x, 1, out);
+}
+
+/* upTo K f z n (Q-S3-30): ACC := Z, I := 0, then REPEAT K {IF I < N {ACC :=
+   STEP ACC}; I := I + 1}. OUT := some ACC when N <= K, else none. A trap in
+   N, or in ACC when N <= K, traps OUT. */
+static int upto_nat(Low *l, Buf *b, const Value *v, Operand *out) {
+  Operand k;
+  Operand n;
+  Operand a;
+  Operand r;
+  const IrExpr *le;
+  Slot acc = slot_new(l);
+  uint32_t i = local_new(l);
+  Buf in = buf_under(b);
+  Buf body = buf_under(&in);
+  Buf step = buf_under(&body);
+  Buf skip = buf_under(&body);
+  a = slot_get(l, acc);
+  r = slot_get(l, acc);
+  if (!(lower(l, b, v->args[0], &k) && lower(l, b, v->args[3], &n) && lower_into(l, &in, v->args[2], acc) &&
+        set(l, &in, i, ex_const(l, 0)) && apply_into(l, &step, v->args[1], &a, 1, acc) &&
+        if_flag(l, &body, ex_bin(l, IR_OP_LT, ex_local(l, i), n.w), &step, &skip) &&
+        set(l, &body, i, ex_bin(l, IR_OP_ADD, ex_local(l, i), ex_const(l, 1))) && st_repeat(l, &in, k.w, &body) &&
+        guard(l, b, n.f, acc, &in)))
+    return 0;
+  le = atom(l, b, ex_bin(l, IR_OP_LE, n.w, k.w));
+  if (!block_tag(l, b, le, &r, 1, out))
+    return 0;
+  out->f = atom(l, b, ex_bin(l, IR_OP_OR, n.f, ex_bin(l, IR_OP_MUL, le, r.f)));
+  return 1;
+}
+
+/* upTo K f z xs (Q-S3-29/30): a walk of at most K + 1 cells (a literal
+   fuel), then, when COUNT <= K, a fold pass of COUNT steps under a literal
+   REPEAT K; some ACC when COUNT <= K, else none. */
+static int upto_list(Low *l, Buf *b, const Value *v, Operand *out) {
+  Operand x;
+  Operand args[2];
+  Operand r;
+  Walk w;
+  const IrExpr *le;
+  const IrExpr *lim;
+  Slot acc = slot_new(l);
+  uint32_t i = local_new(l);
+  uint64_t k = v->args[0]->nat;
+  Buf in = buf_under(b);
+  Buf body = buf_under(&in);
+  Buf step = buf_under(&body);
+  Buf skip = buf_under(&body);
+  args[1] = slot_get(l, acc);
+  r = slot_get(l, acc);
+  if (v->args[0]->kind != VAL_NAT)
+    return internal(l, "an upTo whose capacity is not a Nat literal");
+  if (!(lower(l, b, v->args[3], &x) && walk_fuel(l, b, x, LIST_REC, 2u, NULL, k < SPINE_FUEL ? k + 1u : SPINE_FUEL, &w)))
+    return 0;
+  le = atom(l, b, ex_bin(l, IR_OP_LE, ex_local(l, w.count), ex_const(l, k)));
+  lim = atom(l, b, ex_bin(l, IR_OP_MUL, ex_local(l, w.count), le));
+  if (!(lower_into(l, &in, v->args[2], acc) && set(l, &in, i, ex_const(l, 0)) && chain_head(l, &step, &w, &args[0]) &&
+        apply_into(l, &step, v->args[1], args, 2u, acc) && set(l, &step, w.rev, ex_load(l, ex_local(l, w.rev), 3)) &&
+        if_flag(l, &body, ex_bin(l, IR_OP_LT, ex_local(l, i), lim), &step, &skip) &&
+        set(l, &body, i, ex_bin(l, IR_OP_ADD, ex_local(l, i), ex_const(l, 1))) && st_repeat(l, &in, ex_const(l, k), &body) &&
+        guard(l, b, ex_local(l, w.end), acc, &in) && block_tag(l, b, le, &r, 1, out)))
+    return 0;
+  out->f = atom(l, b, ex_bin(l, IR_OP_OR, ex_local(l, w.end), ex_bin(l, IR_OP_MUL, le, r.f)));
+  return 1;
 }
 
 /* finAdd n a b and finNeg n a as Nat operations on the index (Q-S8-1; eval.c
@@ -1694,6 +2063,7 @@ static int lower_stuck(Low *l, Buf *b, const Value *v, Operand *out) {
   case OP_INTERVAL:
   case OP_SYSTEM:
   case OP_FIN:
+  case OP_NONZERO:
     return internal(l, "a stuck canonical value");
   case OP_FIRST:
   case OP_WITNESS:
@@ -1715,6 +2085,10 @@ static int lower_stuck(Low *l, Buf *b, const Value *v, Operand *out) {
     return v->inst == CARRIER_OPTION ? carrier_filter(l, b, v, out) : not_option(l, b, v, out);
   case OP_FOLD_NAT:
     return fold_nat(l, b, v, out);
+  case OP_UPTO_NAT:
+    return upto_nat(l, b, v, out);
+  case OP_UPTO_LIST:
+    return upto_list(l, b, v, out);
   case OP_FOLD_LIST:
     return fold_list(l, b, v, out);
   case OP_UNFOLD:
@@ -1724,13 +2098,13 @@ static int lower_stuck(Low *l, Buf *b, const Value *v, Operand *out) {
   case OP_ELIM:
     return elim_of(l, b, v, out);
   case OP_NAT_ADD:
-    return nat_bin(l, b, v, IR_OP_ADD, 1, out);
+    return nat_opt(l, b, v, 1, out);
   case OP_NAT_SUB:
-    return nat_bin(l, b, v, IR_OP_SUB, 0, out);
+    return nat_opt(l, b, v, 0, out);
   case OP_NAT_EQ:
-    return nat_bin(l, b, v, IR_OP_EQ, 0, out);
+    return nat_bin(l, b, v, IR_OP_EQ, out);
   case OP_NAT_LE:
-    return nat_bin(l, b, v, IR_OP_LE, 0, out);
+    return nat_bin(l, b, v, IR_OP_LE, out);
   case OP_FLAG_IF:
     return flag_if(l, b, v, out);
   case OP_NAT_DIV:
@@ -1738,20 +2112,30 @@ static int lower_stuck(Low *l, Buf *b, const Value *v, Operand *out) {
   case OP_NAT_MOD:
     return nat_divmod(l, b, v, IR_OP_MOD, out);
   case OP_U256_ADD:
-    return call_op(l, b, v, IR_CALL_U256_ADD, 2, 1, out);
+    return call_opt(l, b, v, IR_CALL_U256_ADD, 2, 0, out);
   case OP_U256_SUB:
-    return call_op(l, b, v, IR_CALL_U256_SUB, 2, 0, out);
+    return call_opt(l, b, v, IR_CALL_U256_SUB, 2, 1, out);
+  case OP_U256_MUL:
+    return call_opt(l, b, v, IR_CALL_U256_MUL, 2, 0, out);
+  case OP_MUL_DIV:
+    return call_opt(l, b, v, IR_CALL_MUL_DIV, 3, 0, out);
+  case OP_ELG_LOG:
+    return refuse(l, "an elgLog (N7, until S8)");
   case OP_U256_LE:
-    return call_op(l, b, v, IR_CALL_U256_LE, 2, 0, out);
+    return call_op(l, b, v, IR_CALL_U256_LE, 2, out);
   case OP_U256_EQ:
   case OP_ADDR_EQ:
-    return call_op(l, b, v, IR_CALL_U256_EQ, 2, 0, out);
+    return call_op(l, b, v, IR_CALL_U256_EQ, 2, out);
   case OP_TO_U256:
-    return call_op(l, b, v, IR_CALL_TO_U256, 1, 0, out);
+    return call_op(l, b, v, IR_CALL_TO_U256, 1, out);
   case OP_HASH:
-    return call_op(l, b, v, IR_CALL_SHA256, 2, 0, out);
+    return call_op(l, b, v, IR_CALL_SHA256, 2, out);
   case OP_ADDR_TO_U256:
     return lower(l, b, v->args[0], out);
+  case OP_NONZERO_OF:
+    return nonzero_opt(l, b, v, out);
+  case OP_NONZERO_VALUE:
+    return lower(l, b, v->args[v->argc - 1u], out);
   case OP_FIN_ADD:
     return fin_op(l, b, v, 1, out);
   case OP_FIN_NEG:
@@ -1761,13 +2145,14 @@ static int lower_stuck(Low *l, Buf *b, const Value *v, Operand *out) {
   case OP_NAT_IS_SET:
   case OP_U256_IS_SET:
   case OP_FLAG_IS_SET:
+  case OP_OPT_NAT_IS_SET:
     return proof_op(l, b, v, 0, v->argc, out);
   case OP_EC_ADD:
-    return call_op(l, b, v, IR_CALL_EC_ADD, 2, 1, out);
+    return call_opt(l, b, v, IR_CALL_EC_ADD, 2, 0, out);
   case OP_EC_MUL:
-    return call_op(l, b, v, IR_CALL_EC_MUL, 2, 1, out);
+    return call_opt(l, b, v, IR_CALL_EC_MUL, 2, 0, out);
   case OP_SCHNORR_OK:
-    return call_op(l, b, v, IR_CALL_SCHNORR_OK, 5, 0, out);
+    return call_op(l, b, v, IR_CALL_SCHNORR_OK, 5, out);
   case OP_TRANSP:
     return refuse(l, "a transp that does not reduce at compile time");
   case OP_HCOMP:
@@ -1821,8 +2206,6 @@ static int lower_value(Low *l, Buf *b, const Value *v, Operand *out) {
     if (end != NULL)
       return lower(l, b, v->dom, &p) && lower(l, b, end, &e) && atoms(l, b, e.w, ex_or(l, p.f, e.f), out);
     return lower(l, b, v->dom, &p) && atoms(l, b, ex_const(l, 0), p.f, out);
-  case VAL_TRAP:
-    return give(l, out, 0, 1);
   case VAL_UNIV:
   case VAL_PI:
   case VAL_SIGMA:
@@ -1859,8 +2242,26 @@ static int lower(Low *l, Buf *b, const Value *v, Operand *out) {
   return ok && (!memo_kind(v) || memo_put(l, b, v, *out));
 }
 
+/* An entry with an Option result (Q-S3-22, Q-S3-23): the status word :=
+   the tag of the block R, and R becomes the payload when the tag is 1, else
+   0. The payload flag still runs TRAP (a backstop: R0 has no source). */
+static int entry_option(Low *l, Buf *b, Operand *r) {
+  const IrExpr *addr = r->w;
+  const IrExpr *tag = atom(l, b, ex_load(l, addr, 0));
+  Slot res = slot_new(l);
+  Buf some = buf_under(b);
+  Buf none = buf_under(b);
+  Buf trap = buf_under(b);
+  Buf pass = buf_under(b);
+  *r = slot_get(l, res);
+  return tag != NULL && emit(l, b, stmt_expr(l, IR_STMT_STATUS, tag)) && store(l, &some, res, field_op(l, addr, 0)) &&
+         store(l, &none, res, operand(ex_const(l, 0), ex_const(l, 0))) && if_flag(l, b, tag, &some, &none) &&
+         emit(l, &trap, stmt_new(l, IR_STMT_TRAP)) && if_flag(l, b, r->f, &trap, &pass);
+}
+
 /* The entry INDEX, applied to a variable for each parameter. Only the
-   result is strict: its flag runs TRAP. */
+   result is strict: its flag runs TRAP, and an Option result sets the
+   status word (entry_option). */
 static int lower_entry(Machine *m, uint32_t index, const Entry *e, IrFunc *fn) {
   Low l;
   Buf body = buf_under(NULL);
@@ -1885,12 +2286,14 @@ static int lower_entry(Machine *m, uint32_t index, const Entry *e, IrFunc *fn) {
     v = x == NULL ? NULL : apply_value(m, v, x);
   }
   if (!got(&l, v) || !lower(&l, &body, v, &r) || !emit(&l, &trap, stmt_new(&l, IR_STMT_TRAP)) ||
-      !if_flag(&l, &body, r.f, &trap, &none) || !emit(&l, &body, stmt_expr(&l, IR_STMT_RETURN, r.w)))
+      !if_flag(&l, &body, r.f, &trap, &none) || (e->result_option && !entry_option(&l, &body, &r)) ||
+      !emit(&l, &body, stmt_expr(&l, IR_STMT_RETURN, r.w)))
     return 0;
   fn->name = m->defs[index].name;
   fn->params = params;
   fn->param_count = e->param_count;
   fn->result = e->result_flag ? IR_SCALAR_FLAG : e->result_u256 ? IR_SCALAR_U256 : IR_SCALAR_NAT;
+  fn->status = e->result_option ? 1 : 0;
   fn->local_count = l.local_count;
   fn->body = block_of(&body);
   return 1;
@@ -1910,7 +2313,7 @@ int lower_program(Machine *m, IrProgram *prog, FILE *err) {
   for (i = 0; i < m->def_count; i++) {
     m->fuel = EVAL_FUEL_STEPS;
     entry = m->defs[i].origin == ORIGIN_PROGRAM && entry_of(m, m->defs[i].type, &e);
-    if (!entry && m->defs[i].origin == ORIGIN_PROGRAM && family_result_of(m, m->defs[i].type))
+    if (err != NULL && !entry && m->defs[i].origin == ORIGIN_PROGRAM && family_result_of(m, m->defs[i].type))
       fprintf(err, "langc: note: %s: a family result has no target form (O24)\n", m->defs[i].name);
     if (entry && !lower_entry(m, i, &e, &funcs[n]))
       return 0;

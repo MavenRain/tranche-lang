@@ -1,50 +1,68 @@
--- Trap flags survive neutral path endpoints and curve calls. Curve errors
--- in an unused fold-state field stay lazy; forcing a trapped coordinate
--- propagates the trap in both the evaluator and the Wasm prelude.
-def evidenceN : (n : Nat) -> (x : Nat) -> Path Nat x x :=
-  fun n x => flagIf (natEq (natAdd n 1) 0) refl refl
+-- Option results survive neutral path endpoints and curve calls (R0 has no
+-- traps). Each evidence def is none at n = 18446744073709551615 (natAdd
+-- overflows), and each end entry reads its path, so the none reaches the
+-- result. A none curve point in an unused fold-state field does not change
+-- the result; a none coordinate gives none in the evaluator, Wasm and JS.
+def reflN : (x : Nat) -> Path Nat x x := fun x => refl
 
-def endN0 : Nat -> Nat -> Nat := fun n x => evidenceN n x @ i0
+def evidenceN : (n : Nat) -> (x : Nat) -> Option (Path Nat x x) :=
+  fun n x => map (fun (s : Nat) => flagIf (natEq s 0) (reflN x) (reflN x)) (natAdd n 1)
 
-def endN1 : Nat -> Nat -> Nat := fun n x => evidenceN n x @ i1
+def endN0 : Nat -> Nat -> Option Nat :=
+  fun n x => map (fun (p : Path Nat x x) => p @ i0) (evidenceN n x)
 
-def varProof : Nat -> Nat -> Nat :=
-  fun n steps => fold (fun (p : Path Nat 0 0) => flagIf (natEq (p @ i1) 0) refl refl) (evidenceN n 0) steps @ i1
+def endN1 : Nat -> Nat -> Option Nat :=
+  fun n x => map (fun (p : Path Nat x x) => p @ i1) (evidenceN n x)
 
-def evidenceF : (n : Nat) -> (x : Flag) -> Path Flag x x :=
-  fun n x => flagIf (natEq (natAdd n 1) 0) refl refl
+def varProof : Nat -> Nat -> Option Nat :=
+  fun n steps => bind (evidenceN n 0) (fun (q : Path Nat 0 0) => map (fun (p : Path Nat 0 0) => p @ i1) (upTo 2 (fun (p : Path Nat 0 0) => flagIf (natEq (p @ i1) 0) refl refl) q steps))
 
-def endF : Nat -> Flag -> Flag := fun n x => evidenceF n x @ i1
+def reflF : (x : Flag) -> Path Flag x x := fun x => refl
 
-def evidenceYes : Nat -> Path Flag flagYes flagYes :=
-  fun n => flagIf (natEq (natAdd n 1) 0) refl refl
+def evidenceF : (n : Nat) -> (x : Flag) -> Option (Path Flag x x) :=
+  fun n x => map (fun (s : Nat) => flagIf (natEq s 0) (reflF x) (reflF x)) (natAdd n 1)
 
-def endYes : Nat -> Flag := fun n => evidenceYes n @ i0
+def endF : Nat -> Flag -> Option Flag :=
+  fun n x => map (fun (p : Path Flag x x) => p @ i1) (evidenceF n x)
 
-def evidenceW : (n : Nat) -> (x : U256) -> Path U256 x x :=
-  fun n x => flagIf (natEq (natAdd n 1) 0) refl refl
+def yesProof : Path Flag flagYes flagYes := refl
 
-def endW : Nat -> U256 -> U256 := fun n x => evidenceW n x @ i1
+def evidenceYes : Nat -> Option (Path Flag flagYes flagYes) :=
+  fun n => map (fun (s : Nat) => flagIf (natEq s 0) yesProof yesProof) (natAdd n 1)
 
-def evidenceP : (n : Nat) -> (x : Nat) -> Path (Prod Nat Nat) (pair x 9) (pair x 9) :=
-  fun n x => flagIf (natEq (natAdd n 1) 0) refl refl
+def endYes : Nat -> Option Flag :=
+  fun n => map (fun (p : Path Flag flagYes flagYes) => p @ i0) (evidenceYes n)
 
-def endP : Nat -> Nat -> Nat := fun n x => first (evidenceP n x @ i1)
+def reflW : (x : U256) -> Path U256 x x := fun x => refl
 
-def lazyAdd : (n : Nat) -> (x : U256) -> (y : U256) -> Nat :=
-  fun n x y => first (fold (fun (p : Prod Nat (Prod U256 U256)) => pair (natAdd (first p) 1) (ecAdd (second p) (pair x y))) (pair 0 (pair 0u 0u)) n)
+def evidenceW : (n : Nat) -> (x : U256) -> Option (Path U256 x x) :=
+  fun n x => map (fun (s : Nat) => flagIf (natEq s 0) (reflW x) (reflW x)) (natAdd n 1)
 
-def lazyMul : (n : Nat) -> (x : U256) -> (y : U256) -> Nat :=
-  fun n x y => first (fold (fun (p : Prod Nat (Prod U256 U256)) => pair (natAdd (first p) 1) (ecMul (pair x y) (first (second p)))) (pair 0 (pair 0u 0u)) n)
+def endW : Nat -> U256 -> Option U256 :=
+  fun n x => map (fun (p : Path U256 x x) => p @ i1) (evidenceW n x)
 
-def coordAddX : U256 -> U256 :=
-  fun x => first (ecAdd (pair (u256Add x 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffu) 0u) (pair 0u 0u))
+def reflP : (x : Nat) -> Path (Prod Nat Nat) (pair x 9) (pair x 9) := fun x => refl
 
-def coordAddY : U256 -> U256 :=
-  fun y => first (ecAdd (pair 0u 0u) (pair 0u (u256Add y 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffu)))
+def evidenceP : (n : Nat) -> (x : Nat) -> Option (Path (Prod Nat Nat) (pair x 9) (pair x 9)) :=
+  fun n x => map (fun (s : Nat) => flagIf (natEq s 0) (reflP x) (reflP x)) (natAdd n 1)
 
-def coordMulX : U256 -> U256 :=
-  fun x => first (ecMul (pair (u256Add x 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffu) 0u) 1u)
+def endP : Nat -> Nat -> Option Nat :=
+  fun n x => map (fun (p : Path (Prod Nat Nat) (pair x 9) (pair x 9)) => first (p @ i1)) (evidenceP n x)
 
-def coordMulY : U256 -> U256 :=
-  fun y => second (ecMul (pair 0u (u256Add y 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffu)) 1u)
+def lazyAdd : (n : Nat) -> (x : U256) -> (y : U256) -> Option Nat :=
+  fun n x y => bind (upTo 4 (fun (p : Prod (Option Nat) (Option (Prod U256 U256))) => pair (bind (first p) (fun (k : Nat) => natAdd k 1)) (bind (second p) (fun (q : Prod U256 U256) => ecAdd q (pair x y)))) (pair (some 0) (some (pair 0u 0u))) n) (fun (p : Prod (Option Nat) (Option (Prod U256 U256))) => first p)
+
+def lazyMul : (n : Nat) -> (x : U256) -> (y : U256) -> Option Nat :=
+  fun n x y => bind (upTo 4 (fun (p : Prod (Option Nat) (Option (Prod U256 U256))) => pair (bind (first p) (fun (k : Nat) => natAdd k 1)) (bind (second p) (fun (q : Prod U256 U256) => ecMul (pair x y) (first q)))) (pair (some 0) (some (pair 0u 0u))) n) (fun (p : Prod (Option Nat) (Option (Prod U256 U256))) => first p)
+
+def coordAddX : U256 -> Option U256 :=
+  fun x => bind (u256Add x 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffu) (fun (a : U256) => map (fun (p : Prod U256 U256) => first p) (ecAdd (pair a 0u) (pair 0u 0u)))
+
+def coordAddY : U256 -> Option U256 :=
+  fun y => bind (u256Add y 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffu) (fun (b : U256) => map (fun (p : Prod U256 U256) => first p) (ecAdd (pair 0u 0u) (pair 0u b)))
+
+def coordMulX : U256 -> Option U256 :=
+  fun x => bind (u256Add x 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffu) (fun (a : U256) => map (fun (p : Prod U256 U256) => first p) (ecMul (pair a 0u) 1u))
+
+def coordMulY : U256 -> Option U256 :=
+  fun y => bind (u256Add y 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffu) (fun (b : U256) => map (fun (p : Prod U256 U256) => second p) (ecMul (pair 0u b) 1u))

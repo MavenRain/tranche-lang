@@ -1,0 +1,2 @@
+5 20 5 123
+bind (upTo 7 (fun (acc : Option Nat) => bind acc (fun (a : Nat) => natAdd a 1)) (some 0) n) (fun (r : Option Nat) => r)

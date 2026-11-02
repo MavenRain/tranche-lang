@@ -1,0 +1,1 @@
+{"diagnostics":[],"progress":{"parsed":3,"typed":3,"laws_discharged":0,"laws_total":0},"bounds":[{"entry":"steps","ops":349,"stack":27,"memory":27},{"entry":"one","ops":2,"stack":1,"memory":0},{"entry":"wide","ops":39,"stack":12,"memory":7}],"fails":[]}

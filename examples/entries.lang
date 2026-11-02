@@ -1,15 +1,18 @@
 -- Entries: first-order Nat and Flag definitions. The target exports them.
-def addPrice : (a : Nat) -> (b : Nat) -> Nat := fun (a : Nat) (b : Nat) => natAdd a b
+def addPrice : (a : Nat) -> (b : Nat) -> Option Nat := fun (a : Nat) (b : Nat) => natAdd a b
 
-def ratio : (a : Nat) -> (k : Nat) -> Nat := fun (a : Nat) (k : Nat) => natDiv a k
+def ratio : (a : Nat) -> (k : Nat) -> Option Nat :=
+  fun (a : Nat) (k : Nat) => map (fun (d : NonZero Nat) => natDiv a d) (nonZero k)
 
-def remainder : (a : Nat) -> (k : Nat) -> Nat := fun (a : Nat) (k : Nat) => natMod a k
+def remainder : (a : Nat) -> (k : Nat) -> Option Nat :=
+  fun (a : Nat) (k : Nat) => map (fun (d : NonZero Nat) => natMod a d) (nonZero k)
 
-def discount : (a : Nat) -> (d : Nat) -> Nat := fun (a : Nat) (d : Nat) => natSub a d
+def discount : (a : Nat) -> (d : Nat) -> Option Nat := fun (a : Nat) (d : Nat) => natSub a d
 
 def cheap : (a : Nat) -> Flag := fun (a : Nat) => natLe a 100
 
-def square : (n : Nat) -> Nat := fun (n : Nat) => fold (fun (acc : Nat) => natAdd acc n) 0 n
+def square : (n : Nat) -> Option Nat :=
+  fun (n : Nat) => bind (upTo 7 (fun (acc : Option Nat) => bind acc (fun (a : Nat) => natAdd a n)) (some 0) n) (fun (r : Option Nat) => r)
 
 def pick : (f : Flag) -> (a : Nat) -> (b : Nat) -> Nat :=
   fun (f : Flag) (a : Nat) (b : Nat) => flagIf f a b

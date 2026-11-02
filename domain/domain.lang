@@ -91,6 +91,31 @@ family Parity := parityOf (parityAt : Size)
 -- Empty is not a family with no constructor (the Q-S10-4 (a) probe).
 family Empty := emptyLoop (emptyOf : Empty)
 
+-- The failures (S3, USER ruling Q-S3-3 (a), N6): each failure that the
+-- domain knows is a value of the closed sum Fail. A failed check, a
+-- missing quorum and a dropped party are values, not stops.
+family Fail := badProof
+  | badSig
+  | badAttest
+  | refusedPair
+  | overCap
+  | overBalance
+  | noQuorum
+  | dropped
+  | outOfRange
+  | full
+  | overflow
+  | replay
+
+-- The failure monad (S3, USER ruling Q-S3-25 (a), rule R1): the cell
+-- monad with the generator exEta and one cell exFail over the closed data
+-- Fail. The kit words keep Option (O9); orFail names the failure of a
+-- none.
+family Except (A : Type 0) := exEta (exEtaOf : A) | exFail (exFailOf : Fail)
+
+def orFail : (A : Type 0) -> Fail -> Option A -> Except A :=
+  fun (A : Type 0) (f : Fail) (o : Option A) => option (exFail A f) (fun (a : A) => exEta A a) o
+
 -- The bag (S3, design C section 3, rule R1): the free commutative monoid
 -- on A. bagOf is the generator, bagUnit the unit and bagOp the operation;
 -- bagAssoc, bagComm and bagUnitL are the monoid paths (the right unit
@@ -152,8 +177,10 @@ def fmRun : (A : Type 0) -> (B : Type 0) -> isSet B -> (A -> B -> B) -> B -> Fre
   fun (A : Type 0) (B : Type 0) (s : isSet B) (step : A -> B -> B) (b0 : B) (r : FreeMon A) => fmFold A (B -> B) (isSetFun B B s) (fun (d : B) => d) (fun (g : B -> B) (h : B -> B) => endoThen B h g) (fun (x : B -> B) (y : B -> B) (z : B -> B) => refl) (fun (x : B -> B) => refl) (fun (x : B -> B) => refl) step r b0
 
 -- len A r, the op count of the trace r (S5, O16): a fold, not a C builtin.
-def len : (A : Type 0) -> FreeMon A -> Nat :=
-  fun (A : Type 0) (r : FreeMon A) => fmChain A Nat natIsSet (fun (n : Nat) (a : A) => natAdd n 1) 0 r
+-- natAdd gives none on a carry (S3, Q-S3-2), so the count is an Option
+-- Nat, a set by the trusted optNatIsSet (Q-S3-11 (a)).
+def len : (A : Type 0) -> FreeMon A -> Option Nat :=
+  fun (A : Type 0) (r : FreeMon A) => fmChain A (Option Nat) optNatIsSet (fun (n : Option Nat) (a : A) => bind n (fun (k : Nat) => natAdd k 1)) (some 0) r
 
 -- The record (S5, Part R, Q-S5-1 .. Q-S5-5 (a)): a trace of entries, each
 -- entry a digest. A guest names Digest, never U256. snoc puts an entry at
@@ -184,7 +211,7 @@ def chainFrom : Digest -> Record -> Digest :=
 def head : Record -> Digest := fun (r : Record) => chainFrom (hash tagGenesis 0u) r
 
 -- The guest names of the L2 successor and the L5 result (Q-S5-10 (a)).
-def opSucc : OpPos -> OpPos := fun (n : OpPos) => natAdd n 1
+def opSucc : OpPos -> Option OpPos := fun (n : OpPos) => natAdd n 1
 
 def Verdict : Type 0 := Flag
 
@@ -193,10 +220,10 @@ def verdictYes : Verdict := flagYes
 -- verify e r (Q-S5-9 (a)): the position of the first entry e of r, or
 -- none. The fold runs from the last entry to the first with a found code:
 -- 0 is none, j + 1 is the position j (foundAt).
-def foundAt : Nat -> Option OpPos := fun (f : Nat) => flagIf (natEq f 0) none (some (natSub f 1))
+def foundAt : Nat -> Option OpPos := fun (f : Nat) => natSub f 1
 
 def verify : Entry -> Record -> Option OpPos :=
-  fun (e : Entry) (r : Record) => foundAt (fmRun Entry Nat natIsSet (fun (x : Entry) (f : Nat) => flagIf (u256Eq x e) 1 (flagIf (natEq f 0) 0 (natAdd f 1))) 0 r)
+  fun (e : Entry) (r : Record) => bind (fmRun Entry (Option Nat) optNatIsSet (fun (x : Entry) (f : Option Nat) => flagIf (u256Eq x e) (some 1) (bind f (fun (g : Nat) => flagIf (natEq g 0) (some 0) (natAdd g 1)))) (some 0) r) foundAt
 
 -- prefix r s (Q-S5-5 (a)): s is r and then a rest t, by a path.
 def prefix : Record -> Record -> Type 0 :=
@@ -206,14 +233,15 @@ def prefix : Record -> Record -> Type 0 :=
 -- entries from p to the end. recTake p r keeps the entries before p and
 -- recDrop p r the entries from p. verifyAt e inc h is verdictYes when the
 -- first entry of the suffix is e and the chain from inclBefore over the
--- suffix ends at h.
+-- suffix ends at h. Each step counts p down with natSub (none at 0, S3),
+-- so no step adds.
 family Inclusion := inclusionOf (inclBefore : Digest) (inclSuffix : Record)
 
 def recTake : OpPos -> Record -> Record :=
-  fun (p : OpPos) (r : Record) => fmRun Entry (Nat -> Record) (isSetFun Nat Record (fmIsSet Entry)) (fun (x : Entry) (b : Nat -> Record) (n : Nat) => flagIf (natLe p n) (fmUnit Entry) (fmCons Entry x (b (natAdd n 1)))) (fun (n : Nat) => fmUnit Entry) r 0
+  fun (p : OpPos) (r : Record) => fmRun Entry (Nat -> Record) (isSetFun Nat Record (fmIsSet Entry)) (fun (x : Entry) (b : Nat -> Record) (k : Nat) => option (fmUnit Entry) (fun (j : Nat) => fmCons Entry x (b j)) (natSub k 1)) (fun (n : Nat) => fmUnit Entry) r p
 
 def recDrop : OpPos -> Record -> Record :=
-  fun (p : OpPos) (r : Record) => fmRun Entry (Nat -> Record) (isSetFun Nat Record (fmIsSet Entry)) (fun (x : Entry) (b : Nat -> Record) (n : Nat) => flagIf (natLe p n) (fmCons Entry x (b (natAdd n 1))) (b (natAdd n 1))) (fun (n : Nat) => fmUnit Entry) r 0
+  fun (p : OpPos) (r : Record) => fmRun Entry (Nat -> Record) (isSetFun Nat Record (fmIsSet Entry)) (fun (x : Entry) (b : Nat -> Record) (k : Nat) => option (fmCons Entry x (b 0)) b (natSub k 1)) (fun (n : Nat) => fmUnit Entry) r p
 
 def inclusion : OpPos -> Record -> Inclusion :=
   fun (p : OpPos) (r : Record) => inclusionOf (head (recTake p r)) (recDrop p r)
@@ -347,11 +375,11 @@ def tagUsed : Digest -> Box -> Flag :=
 def castBallot : Proposal -> SealedBallot -> Box -> Option Box :=
   fun (p : Proposal) (b : SealedBallot) (box : Box) => flagIf (tagUsed (linkTag b) box) none (some (fmMul SealedBallot box (fmEta SealedBallot b)))
 
-def tallyBox : Box -> Enc Count :=
-  fun (box : Box) => fmChain SealedBallot (Enc Count) (encIsSet Count natIsSet) (fun (t : Enc Count) (b : SealedBallot) => encOp2 Count Flag Count (fun (n : Count) (f : Flag) => flagIf f (natAdd n 1) n) t (ballotVote b)) (encEta Count 0) box
+def tallyBox : Box -> Enc (Option Count) :=
+  fun (box : Box) => fmChain SealedBallot (Enc (Option Count)) (encIsSet (Option Count) optNatIsSet) (fun (t : Enc (Option Count)) (b : SealedBallot) => encOp2 (Option Count) Flag (Option Count) (fun (n : Option Count) (f : Flag) => flagIf f (bind n opSucc) n) t (ballotVote b)) (encEta (Option Count) (some 0)) box
 
-def countVotes : FreeMon Verdict -> Count :=
-  fun (vs : FreeMon Verdict) => fmChain Verdict Count natIsSet (fun (n : Count) (f : Verdict) => flagIf f (natAdd n 1) n) 0 vs
+def countVotes : FreeMon Verdict -> Option Count :=
+  fun (vs : FreeMon Verdict) => fmChain Verdict (Option Count) optNatIsSet (fun (n : Option Count) (f : Verdict) => flagIf f (bind n opSucc) n) (some 0) vs
 
 def Decided : Type 0 := Prod Proposal Count
 

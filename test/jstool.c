@@ -30,6 +30,7 @@ typedef struct {
   size_t param_count;
   int wide_param[MAX_PARAMS]; /* 1: a U256, 0: a Nat or Flag */
   int wide_result;            /* 1: a U256 */
+  int status;                 /* 1: an Option result, status 0 = none (Q-S3-23) */
 } Entry;
 
 typedef struct {
@@ -56,6 +57,7 @@ static int abi_line(Entry *e, const char *line) {
   const char *open = strstr(line, " (");
   const char *close = strstr(line, ") -> ");
   const char *p;
+  const char *r;
   size_t n = (size_t)(open - line);
   if (open == NULL || close == NULL || close < open || n == 0 || n >= MAX_NAME) return 0;
   memcpy(e->name, line, n);
@@ -69,7 +71,9 @@ static int abi_line(Entry *e, const char *line) {
     comma = strstr(e->wide_param[e->param_count] && end != NULL ? end : p, ", ");
     p = comma != NULL && comma < close ? comma + 2 : close;
   }
-  e->wide_result = strncmp(close + 5, "u256", 4) == 0;
+  e->status = strncmp(close + 5, "option[", 7) == 0;
+  r = e->status && strstr(close, "] ") != NULL ? strstr(close, "] ") + 2 : close + 5;
+  e->wide_result = strncmp(r, "u256", 4) == 0;
   return p == close;
 }
 
@@ -145,9 +149,10 @@ static void put_module_url(FILE *f, const char *path) {
   fputc('"', f);
 }
 
-/* The driver head: it loads the module at PATH, and c(f) adds the result line
-   of one call: `v DIGITS` for a BigInt result, `trap` for an Error with the
-   message TRAP, else a bad line. */
+/* The driver head: it loads the module at PATH, and c(f, st) adds the result
+   line of one call: for an Option entry (ST, preset to 2) `none` for status
+   0, `v DIGITS` for a BigInt result, `trap` for an Error with the message
+   TRAP, else a bad line. */
 static void put_head(FILE *f, const char *path) {
   /* Dynamic import calls an export named then as a Promise callback. A
      static namespace import preserves every legal Tranche entry name. */
@@ -155,10 +160,11 @@ static void put_head(FILE *f, const char *path) {
   put_module_url(f, path);
   fputs(";\n"
         "const out = [];\n"
-        "const c = (f) => {\n"
+        "const c = (f, st) => {\n"
         "  try {\n"
-        "    const r = f();\n"
-        "    out.push(typeof r === 'bigint' ? 'v ' + r.toString() : 'bad: the result is not a BigInt');\n"
+        "    const r = f(st);\n"
+        "    out.push(st !== undefined && st[0] !== 1 ? (st[0] === 0 ? 'none' : 'bad: the entry writes no status')\n"
+        "      : typeof r === 'bigint' ? 'v ' + r.toString() : 'bad: the result is not a BigInt');\n"
         "  } catch (e) {\n"
         "    out.push(e instanceof Error && e.message === 'TRAP' ? 'trap' : 'bad: the entry does not run');\n"
         "  }\n"
@@ -189,7 +195,7 @@ static Call read_call(const Abi *abi, char *line, FILE *f) {
     call.kind = CALL_BAD_ARG;
     return call;
   }
-  fputs("c(() => m[", f);
+  fputs(e->status ? "c((st) => m[" : "c(() => m[", f);
   put_js_string(f, e->name);
   fputs("](", f);
   for (k = 0; k < e->param_count; k++) {
@@ -199,7 +205,7 @@ static Call read_call(const Abi *abi, char *line, FILE *f) {
               wide[k].limb[1], wide[k].limb[0]);
     if (!e->wide_param[k]) fprintf(f, "%" PRIu64 "n", narrow[k]);
   }
-  fputs("));\n", f);
+  fputs(!e->status ? "));\n" : e->param_count > 0 ? ", st), Int32Array.of(2));\n" : "st), Int32Array.of(2));\n", f);
   call.kind = e->wide_result ? CALL_WIDE : CALL_WORD;
   return call;
 }

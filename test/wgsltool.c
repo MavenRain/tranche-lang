@@ -7,7 +7,8 @@
    deno in one driver program (a temp file on its stdin) that holds the module
    text and the in row of each call. A row is u32 words, low first: a Nat or
    Flag is 2 words, a U256 is 8. The out row of an entry is a status word (0
-   ok, 1 trap), then the result. The driver runs the calls of each entry in
+   ok, 1 trap), the Option status of an Option entry (0 none, 1 some), then
+   the result. The driver runs the calls of each entry in
    one dispatch, one invocation for each call, and prints one line per call in
    the call order; this tool checks and formats each line. */
 #ifndef _POSIX_C_SOURCE
@@ -33,6 +34,7 @@ typedef struct {
   size_t param_count;
   int wide_param[MAX_PARAMS]; /* 1: a U256, 0: a Nat or Flag */
   int wide_result;            /* 1: a U256 */
+  int status;                 /* 1: an Option result, status 0 = none (Q-S3-23) */
 } Entry;
 
 typedef struct {
@@ -59,6 +61,7 @@ static int abi_line(Entry *e, const char *line) {
   const char *open = strstr(line, " (");
   const char *close = strstr(line, ") -> ");
   const char *p;
+  const char *r;
   size_t n = (size_t)(open - line);
   if (open == NULL || close == NULL || close < open || n == 0 || n >= MAX_NAME) return 0;
   memcpy(e->name, line, n);
@@ -72,7 +75,9 @@ static int abi_line(Entry *e, const char *line) {
     comma = strstr(e->wide_param[e->param_count] && end != NULL ? end : p, ", ");
     p = comma != NULL && comma < close ? comma + 2 : close;
   }
-  e->wide_result = strncmp(close + 5, "u256", 4) == 0;
+  e->status = strncmp(close + 5, "option[", 7) == 0;
+  r = e->status && strstr(close, "] ") != NULL ? strstr(close, "] ") + 2 : close + 5;
+  e->wide_result = strncmp(r, "u256", 4) == 0;
   return p == close;
 }
 
@@ -142,7 +147,7 @@ static int put_head(FILE *f, FILE *code) {
   for (c = fgetc(code); c != EOF; c = fgetc(code)) put_js_char(f, (unsigned)c);
   fputs("\";\n"
         "const calls = [];\n"
-        "const k = (name, row, width) => calls.push({ name, row, width });\n",
+        "const k = (name, row, width, st) => calls.push({ name, row, width, st });\n",
         f);
   return !ferror(code);
 }
@@ -150,7 +155,7 @@ static int put_head(FILE *f, FILE *code) {
 /* The driver tail: the calls of each entry go in one dispatch (at most `per`
    rows, so that the heap slices fit in one binding). An out row starts with
    status 2, so an invocation that writes no status gives a bad line. Each
-   call gets one line: `v DIGITS`, `trap` or a bad line. */
+   call gets one line: `v DIGITS`, `none`, `trap` or a bad line. */
 static void put_tail(FILE *f) {
   fputs("const out = calls.map(() => 'bad: the call does not run');\n"
         "const adapter = await navigator.gpu.requestAdapter();\n"
@@ -176,7 +181,7 @@ static void put_tail(FILE *f) {
         "  const rows = new Uint32Array(Math.max(1, n * inw));\n"
         "  const blank = new Uint32Array(n * width);\n"
         "  ids.forEach((id, j) => rows.set(calls[id].row, j * inw));\n"
-        "  ids.forEach((id, j) => (blank[j * width] = 2));\n"
+        "  ids.forEach((id, j) => blank.fill(2, j * width, j * width + (calls[id].st ? 2 : 1)));\n"
         "  device.pushErrorScope('out-of-memory');\n"
         "  device.pushErrorScope('internal');\n"
         "  device.pushErrorScope('validation');\n"
@@ -210,8 +215,9 @@ static void put_tail(FILE *f) {
         "    back.unmap();\n"
         "    ids.forEach((id, j) => {\n"
         "      const r = got.subarray(j * width, (j + 1) * width);\n"
-        "      out[id] = r[0] === 0 ? 'v ' + value(Array.from(r.subarray(1))).toString() : r[0] === 1 ? 'trap' : "
-        "'bad: the entry writes no status';\n"
+        "      const s = calls[id].st ? 1 : 0;\n"
+        "      out[id] = r[0] === 1 ? 'trap' : r[0] !== 0 || r[s] > 1 ? 'bad: the entry writes no status' : s && r[1] === 0 ? 'none' : "
+        "'v ' + value(Array.from(r.subarray(1 + s))).toString();\n"
         "    });\n"
         "  } catch (e) {\n"
         "    ids.forEach((id) => (out[id] = 'bad: ' + first(e)));\n"
@@ -260,7 +266,7 @@ static Call read_call(const Abi *abi, char *line, FILE *f) {
       fprintf(f, "%s%" PRIu32 ", %" PRIu32, k + w > 0 ? ", " : "", (uint32_t)x, (uint32_t)(x >> 32));
     }
   }
-  fprintf(f, "], %d);\n", e->wide_result ? 9 : 3);
+  fprintf(f, "], %d%s);\n", (e->wide_result ? 9 : 3) + e->status, e->status ? ", 1" : "");
   call.kind = e->wide_result ? CALL_WIDE : CALL_WORD;
   return call;
 }
