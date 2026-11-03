@@ -1,0 +1,8 @@
+-- TYPE_MISMATCH (S4 C6, Q-S4-7): rTable needs C = Prod J S, with J and S
+-- sums of constructors with no fields. The constructor szS of Size has a
+-- field. The fix gives C = Prod Status Status.
+def C : Type 0 := Prod Size Status
+
+def R : C -> C -> Option Nat := fun (h : C) (k : C) => some 1
+
+def table : List (Prod (Prod C C) Nat) := rTable R

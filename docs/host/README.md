@@ -146,7 +146,7 @@ code and one bound code (Q-S3-28):
 - `REFUSE_RUNTIME_CLOSURE`: a function value must exist at run time.
 - `REFUSE_RUNTIME_TREE`: a fold walks a tree that exists only at run time.
 - `REFUSE_LOWER`: a construct does not lower.
-- `REFUSE_TARGET_SECRET`: the operation touches a secret key or a witness (O6).
+- `REFUSE_TARGET_SECRET`: the operation touches a secret key or a witness (O6), or a def that reaches one (Q-S4-9).
 - `REFUSE_UNBOUNDED`: a loop has a trip count that exists only at run time; write it as `upTo K` with a Nat literal K.
 
 ## No trap form
@@ -211,35 +211,37 @@ what the domain holds and how to change it.
 
 | Line | What the gate does |
 |---|---|
-| `examples: 59 checked, 0 failed` | `langc check` accepts each `examples/*.lang` file |
+| `examples: 60 checked, 0 failed` | `langc check` accepts each `examples/*.lang` file |
 | `parse refusals: 19 checked` | each `test/parse` file fails with the code in `test/parse/expect.txt`; one file has 1100 nested parentheses |
 | `check refusals: 204 checked` | each `test/check` mutant fails with the code in `test/check/expect.txt`; the `TYPE_REFL` message shows both normal forms |
-| `evals: 275 checked` | `langc eval` gives each result in `test/eval/expect.txt` |
-| `build refusals: 10 checked` | `langc build examples/dao.lang -o OUT` exits 0, writes nothing on stdout and writes a valid module; each refused build exits 1 with its code and writes nothing on stdout; the rows include the transp row (`test/ir/transp.lang`, `REFUSE_LOWER`), three `REFUSE_TARGET_SECRET` rows (`test/ir/secret-key.lang`, `test/ir/secret-sign.lang`, O6, and `test/ir/secret-key.lang` with `--wgsl`), the elim row (`test/ir/tree-elim.lang`, `REFUSE_RUNTIME_TREE`, O26), a guest-mode `REFUSE_KIT` row and the `REFUSE_UNBOUNDED` row (`test/ir/unbounded.lang`, Q-S3-28: the message names `upTo K`, and `build/fronttool fix` with `test/ir/unbounded.fix` gives a file that `langc --kit build` builds) |
-| `ir: 56 lowered, 2 refused (HOST-LIMIT), 1 refused (REFUSE_TARGET_SECRET)` | `langc ir` lowers each example, with one `func` for each `abi --text` line derived independently from checked types; an example that does not lower refuses `REFUSE_LOWER` with a `HOST-LIMIT` detail (`examples/ballot.lang` and `examples/daokit.lang`: `sigOk` is a host proof check), and `examples/zk.lang` refuses `REFUSE_TARGET_SECRET` (`noSigner`, Q-S3-24) |
-| `wasm: 56 modules valid` | `langc build` writes a module for each lowered example, and `wasm-validate` and `wasm-objdump -x` accept it |
-| `wgsl: 56 modules written` | `langc build PROG --wgsl OUT.wgsl` writes a WGSL compute module for each lowered example; each build exits 0 and writes nothing on stdout |
+| `evals: 295 checked` | `langc eval` gives each result in `test/eval/expect.txt` |
+| `build refusals: 13 checked` | `langc build examples/dao.lang -o OUT` exits 0, writes nothing on stdout and writes a valid module; each refused build exits 1 with its code and writes nothing on stdout; the rows include the transp row (`test/ir/transp.lang`, `REFUSE_LOWER`), three `REFUSE_TARGET_SECRET` rows (`test/ir/secret-key.lang`, `test/ir/secret-sign.lang`, O6, and `test/ir/secret-key.lang` with `--wgsl`), the three S4 rows (`test/ir/secret-claim.lang`: `claimCom` on a run-time blinding, `REFUSE_TARGET_SECRET`; `test/ir/secret-attest.lang`: `attestSign` on a run-time issuer key, `REFUSE_TARGET_SECRET`; `test/ir/attest-verify.lang`: a public ring of 2G and 3G, `REFUSE_LOWER` with a `HOST-LIMIT` detail, because `attestVerify` is a host proof check until S8), the elim row (`test/ir/tree-elim.lang`, `REFUSE_RUNTIME_TREE`, O26), a guest-mode `REFUSE_KIT` row and the `REFUSE_UNBOUNDED` row (`test/ir/unbounded.lang`, Q-S3-28: the message names `upTo K`, and `build/fronttool fix` with `test/ir/unbounded.fix` gives a file that `langc --kit build` builds) |
+| `ir: 55 lowered, 2 refused (HOST-LIMIT), 3 refused (REFUSE_TARGET_SECRET)` | `langc ir` lowers each example, with one `func` for each `abi --text` line derived independently from checked types; an example that does not lower refuses `REFUSE_LOWER` with a `HOST-LIMIT` detail (`examples/ballot.lang` and `examples/daokit.lang`: `sigOk` is a host proof check); `examples/zk.lang` (`noSigner`, Q-S3-24), `examples/claims.lang` and `examples/zkcast.lang` (a def that reaches a secret op, Q-S4-9) refuse `REFUSE_TARGET_SECRET` |
+| `wasm: 55 modules valid` | `langc build` writes a module for each lowered example, and `wasm-validate` and `wasm-objdump -x` accept it |
+| `wgsl: 55 modules written` | `langc build PROG --wgsl OUT.wgsl` writes a WGSL compute module for each lowered example; each build exits 0 and writes nothing on stdout |
 | `wgsl refusals: 2 checked` | each `--wgsl` usage row of `src/main.c` fails with its message: `--wgsl` with `--js`, and `--wgsl` with no path |
-| `wasm differential: 93 rows, 0 mismatches` | `build/wasmtool` (`test/wasmtool.c`, on the wasmtime C API) runs each `test/eval/expect.txt` row whose name is an entry of its file; each result is equal to the row result, and `none` is equal to `none` |
-| `js differential: 93 rows, 0 mismatches` | `langc build PROG --js OUT.mjs` writes an ES module for each lowered example, and `build/jstool` (`test/jstool.c`, node through `popen`) runs the rows of the `wasm differential` line; each result is equal to the row result, and `none` is equal to `none` |
+| `wasm differential: 92 rows, 0 mismatches` | `build/wasmtool` (`test/wasmtool.c`, on the wasmtime C API) runs each `test/eval/expect.txt` row whose name is an entry of its file; each result is equal to the row result, and `none` is equal to `none` |
+| `js differential: 92 rows, 0 mismatches` | `langc build PROG --js OUT.mjs` writes an ES module for each lowered example, and `build/jstool` (`test/jstool.c`, node through `popen`) runs the rows of the `wasm differential` line; each result is equal to the row result, and `none` is equal to `none` |
 | `test/ir wasm: 5 modules valid, 32 rows, 0 mismatches` | each `test/ir` module builds in `--kit` mode and is valid, and each row of the gate list gives the same result on `build/wasmtool` and in `langc --kit eval` |
 | `test/ir js: 32 rows, 0 mismatches` | each row of the `test/ir` gate list gives the same result on `build/jstool` and in `langc --kit eval` |
 | `entry boundary grid: 616 rows, evaluator/wasm/js passed` | `test/entrytest.c` checks Nat and Flag entries against independent C arithmetic |
 | `fixture boundary grid: 178 rows, wasm/js passed` | the fixture grid compares compiled results with the evaluator |
 | `word boundary grid: 23 rows, evaluator/wasm/js passed` | fixed arithmetic identities check U256 zero detection, multiplication and full-width division, including overflow and zero-divisor handling |
 | `json abi: 2 checked` | `langc --kit abi test/wasm/secp.lang` prints the JSON abi line (each kind is `nat`, `flag` or `u256`; an entry with an `Option` result has `"option":true`), and `abi` with a flag other than `--text` refuses `USAGE` |
-| `fmt canonical: 308 passed` | `langc fmt` gives the same bytes for each accepted `.lang` file of `domain/`, `examples/` and `test/*/` outside `test/fmt/` (the `test/json` rows `LEX_*` and `PARSE_*` are not in this check); each file that `langc fmt` refuses is in `test/fmt/refused.txt` (18 `test/parse` files), and no accepted file is |
-| `fmt round trip: 315 passed` | each accepted file (the 308 files and the 7 `test/fmt/*.lang` files) and its canonical text give the same `build/fronttool dump` (`test/fronttool.c`: one line for each node, with no line numbers and no comments) |
+| `fmt canonical: 317 passed` | `langc fmt` gives the same bytes for each accepted `.lang` file of `domain/`, `examples/` and `test/*/` outside `test/fmt/` (the `test/json` rows `LEX_*` and `PARSE_*` are not in this check); each file that `langc fmt` refuses is in `test/fmt/refused.txt` (18 `test/parse` files), and no accepted file is |
+| `fmt round trip: 324 passed` | each accepted file (the 317 files and the 7 `test/fmt/*.lang` files) and its canonical text give the same `build/fronttool dump` (`test/fronttool.c`: one line for each node, with no line numbers and no comments) |
 | `fmt rows: 7 passed` | `langc fmt test/fmt/X.lang` gives the bytes of `test/fmt/X.canon` for each of the 7 rows |
 | `fmt check: 8 passed` | `langc fmt X.canon --check` exits 0 for each of the 7 rows, and `langc fmt test/fmt/check.lang --check` exits 1 with `test/fmt/check.lang:3: not canonical` |
-| `json rows: 28 passed` | for each `test/json/X.lang`, `langc check --json` exits 0 (the rows `ok`, `kit` and `kit.TAG`) or 1 (each other row, whose first code is the file name up to the first dot), writes nothing on stderr, and gives the bytes of `test/json/X.json`; each refused row has `test/json/X.fix` (`docs/CHECK-JSON.md`) |
+| `json rows: 33 passed` | for each `test/json/X.lang`, `langc check --json` exits 0 (the rows `ok`, `kit` and `kit.TAG`) or 1 (each other row, whose first code is the file name up to the first dot), writes nothing on stderr, and gives the bytes of `test/json/X.json`; each refused row has `test/json/X.fix` (`docs/CHECK-JSON.md`). The `rTable` rows (S4 C6, Q-S4-7): `REFUSE_UNBOUNDED.rows` (29 rows, over the rows cap of 28), `REFUSE_UNBOUNDED.pairs` (1296 pairs, over the pairs cap of 1024), `TYPE_MISMATCH.rtable` (a constructor with a field) and `kit.tables` (28 rows, at the cap, in the `tables` key). `REFUSE_TARGET_SECRET.closed`: a closed def that reaches `zkKey` (Q-S4-9 (a)) |
 | `json refusal codes: 19 of 19` | each `REFUSE_` code of `src/front/check.c` and `src/front/lower.c` has a row `test/json/CODE.lang`, and the list of codes is not empty |
-| `json fixes: 24 passed` | `build/fronttool fix` applies each `test/json/X.fix` to its row, and `langc check --json` of the result exits 0 or gives a first code other than the code of the row |
+| `json fixes: 28 passed` | `build/fronttool fix` applies each `test/json/X.fix` to its row, and `langc check --json` of the result exits 0 or gives a first code other than the code of the row |
 | `mcp rows: 9 passed` | for each `test/mcp/X.in`, `build/mcptool` runs `langc mcp` (`langc --kit mcp` when `X` starts with `kit-`) with the file on stdin: stdout gives the bytes of `test/mcp/X.out`, stderr is empty and the exit status is 0 |
 | `mcp negatives: 3 of 3` | `build/mcptool` exits 1 on each of 3 bad inputs: a copy of the `explain` row with one more byte in its `.out`, a row with no `.out`, and no row |
 | `mcp tools: 5 of 5` | each of the 5 tools (`check`, `fmt`, `eval`, `build`, `explain`) has a `tools/call` request in a `test/mcp/*.in` row |
 | `explain codes: 19 of 19` | the `REFUSE_` codes in `src` (not in `src/front/codes.c`) are the codes of the `src/front/codes.c` table, and for each code `langc explain CODE` exits 0 with one line `CODE: ...` and no stderr |
 | `gate: 0 failures` | the sum of all failures |
+| `ringsig: 64 rows, 0 failed` | `build/ringsigtool` (`test/ringsigtool.c`): the ring signature with no key image of `src/front/ringsig.c` (S4 C1) accepts on rings of 1, 2 and 28 keys and signs the same words twice; it rejects a flipped bit in each word and a changed key, com or ring; ring 0, ring 29, an off-curve ring key, a ring key at infinity and an off-curve key or com give none, and sign nothing |
+| `claimcom: 14 rows, 0 failed` | `build/claimtool` (`test/claimtool.c`): the claim commitment of `src/front/claimcom.c` (S4 C2) gives the generators G1, G2 and H pinned from a Python computation apart from the C code, the homomorphic sum on 3 rows, none for r = 0 and r = n, and `com(0, 0, 1) = H` (F5) |
 
 `make check` also runs `test/jstest.c` against an ES module with entries
 named `default`, `a'` and `then`, loaded from a path containing a space,
@@ -270,9 +272,9 @@ prints these lines when it is GREEN:
 
 | Line | What the gate does |
 |---|---|
-| `wgsl valid: 52 modules` | the GPU compiles each entry of the WGSL module of each lowered example; the 4 modules of `test/wgsl/internal.txt` are not counted |
-| `wgsl known internal: 4 modules, 20 entries` | each entry of `test/wgsl/internal.txt` gives `GPUInternalError` (the Metal backend limit, `docs/VALIDATION.md` V15), and no other entry does |
-| `wgsl differential: 81 rows, 0 mismatches` | `build/wgsltool` runs the rows of the `wasm differential` line; each result is equal to the row result, and `none` is equal to `none` |
+| `wgsl valid: 53 modules` | the GPU compiles each entry of the WGSL module of each lowered example; the 2 lowered modules of `test/wgsl/internal.txt` (`examples/onehot.lang`, `examples/threshold.lang`) are not counted |
+| `wgsl known internal: 2 modules, 6 entries` | each entry of `test/wgsl/internal.txt` in a lowered module gives `GPUInternalError` (the Metal backend limit, `docs/VALIDATION.md` V15), and no other entry does; the 14 lines of `examples/ballot.lang` and `examples/daokit.lang` are not counted, because these examples do not lower (HOST-LIMIT) |
+| `wgsl differential: 92 rows, 0 mismatches` | `build/wgsltool` runs the rows of the `wasm differential` line; each result is equal to the row result, and `none` is equal to `none` |
 | `wgsl regressions: passed` | the rows of `test/wasm/hash.txt`, `test/wasm/secp.txt` and `test/wasm/traps.txt` on the WGSL module, so the gate prints this line three times |
 | `test/ir wgsl: 32 rows, 0 mismatches` | each row of the `test/ir` gate list gives the same result on `build/wgsltool` and in `langc --kit eval` |
 | `wgsl batch: 192 rows, 0 mismatches` | the batch proof check of `test/wgsl/batch.lang` on the rows of `test/wgsl/batch.txt`: 64 rows each for `sigOk`, `or0Ok` and `or1Ok` |

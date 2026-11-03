@@ -188,6 +188,9 @@ build_refused --kit REFUSE_TARGET_SECRET examples/zk.lang
 build_refused --kit REFUSE_LOWER test/ir/transp.lang
 build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-key.lang
 build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-sign.lang
+build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-claim.lang
+build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-attest.lang
+build_refused --kit REFUSE_LOWER test/ir/attest-verify.lang
 # S10: the WGSL module refuses the secret ops too.
 build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-key.lang --wgsl
 build_refused "" REFUSE_KIT test/ir/comb.lang
@@ -236,8 +239,9 @@ echo "build refusals: $builds checked"
 # An example that does not lower must refuse REFUSE_LOWER with a HOST-LIMIT
 # detail (a host proof check, as examples/ballot.lang and examples/daokit.lang;
 # the secp256k1 ops of part B lower), or REFUSE_TARGET_SECRET for a def that
-# touches a secret key (examples/zk.lang noSigner, Q-S3-24). An example with a
-# family-result def exits 0 with an O24 note.
+# reaches a secret op (Q-S3-24, Q-S4-9: a closed def too, through the defs it
+# names). Only examples/zk.lang, examples/claims.lang and examples/zkcast.lang
+# may refuse so. An example with a family-result def exits 0 with an O24 note.
 irs=0
 host_limits=0
 secrets=0
@@ -249,7 +253,11 @@ for f in examples/*.lang; do
   build/langc $k ir "$f" >"$tmp/ir.txt" 2>"$tmp/ir.err" || status=$?
   case "$status:$(head -n 1 "$tmp/ir.err")" in
     "1:langc: REFUSE_LOWER: "*"(HOST-LIMIT)"*) host_limits=$((host_limits + 1)); continue ;;
-    "1:langc: REFUSE_TARGET_SECRET: noSigner: "*) secrets=$((secrets + 1)); continue ;;
+    "1:langc: REFUSE_TARGET_SECRET: "*)
+      case $f in
+        examples/zk.lang | examples/claims.lang | examples/zkcast.lang) secrets=$((secrets + 1)); continue ;;
+      esac
+      echo "FAIL ir $f: exit $status: $(head -n 1 "$tmp/ir.err")"; fail=$((fail + 1)); continue ;;
     0: | "0:langc: note: "*"(O24)") ;;
     *) echo "FAIL ir $f: exit $status: $(head -n 1 "$tmp/ir.err")"; fail=$((fail + 1)); continue ;;
   esac
@@ -728,7 +736,8 @@ echo "fmt check: $checks passed"
 # test/json/CODE.json on stdout and nothing on stderr. It exits 0 for ok and
 # kit, else it exits 1 and the first code is CODE. The rows kit,
 # REFUSE_HISTORY_WRITE, REFUSE_MAP, REFUSE_PARTIAL, REFUSE_STATE and the 5
-# lowering codes run with --kit. Each REFUSE_ code of src/front/check.c and
+# lowering codes run with --kit, and so does the row TYPE_MISMATCH.rtable
+# (rTable needs Nat, a kit item). Each REFUSE_ code of src/front/check.c and
 # src/front/lower.c has a row (Q-S3-36). Each row other than ok and kit
 # has test/json/CODE.fix: `fronttool fix` applies it, and `langc check --json`
 # of the result exits 0 or gives a first code other than CODE.
@@ -737,6 +746,11 @@ echo "fmt check: $checks passed"
 json_kit() {
   case $1 in
     kit | REFUSE_HISTORY_WRITE | REFUSE_LOWER | REFUSE_MAP | REFUSE_PARTIAL | REFUSE_RUNTIME_CLOSURE | REFUSE_RUNTIME_TREE | REFUSE_STATE | REFUSE_TARGET_SECRET | REFUSE_UNBOUNDED) echo --kit ;;
+    TYPE_MISMATCH)
+      case $2 in
+        TYPE_MISMATCH.rtable) echo --kit ;;
+      esac
+      ;;
   esac
 }
 jrows=0
@@ -751,7 +765,7 @@ for f in test/json/*.lang; do
       ;;
   esac
   status=0
-  build/langc $(json_kit "$code") check --json "$f" >"$tmp/json.out" 2>"$tmp/json.err" || status=$?
+  build/langc $(json_kit "$code" "$stem") check --json "$f" >"$tmp/json.out" 2>"$tmp/json.err" || status=$?
   first=0
   case $(cat "$tmp/json.out") in
     "$head"*) first=1 ;;
@@ -785,7 +799,7 @@ for x in test/json/*.fix; do
     continue
   fi
   status=0
-  build/langc $(json_kit "$code") check --json "$tmp/fixed.lang" >"$tmp/json.out" 2>"$tmp/json.err" || status=$?
+  build/langc $(json_kit "$code" "$stem") check --json "$tmp/fixed.lang" >"$tmp/json.out" 2>"$tmp/json.err" || status=$?
   same=0
   case $(cat "$tmp/json.out") in
     "{\"diagnostics\":[{\"code\":\"$code\","*) same=1 ;;

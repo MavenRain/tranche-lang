@@ -53,6 +53,15 @@ EXIT 0. Next: S4 (Part I).
 | 2026-11-02 | Q-S3-35, verbatim: "Except defs, normal form (Recommended)". No entry can give a `Fail`: `entry_of` admits a Nat, Flag or U256 result or an `Option` of one, and `Except` is a family (O24). `check --json` lists each program def with an `Except` result and the `Fail` constructors in its normal form. This is an upper set: the inputs are Nat, Flag or U256, thus each `Fail` value comes from a constructor in the term. The key is `,"fails":[{"def":"NAME","values":[...]}]` after `bounds`, `[]` when there is no such def or the check fails. The bound entries have no `fails` key. | USER, S3 R3 (AskUserQuestion) |
 | 2026-11-02 | Q-S3-36, verbatim: "Extend + 4 rows (Recommended)". The gate rule `json refusal codes` reads the `REFUSE_` codes of `src/front/check.c` and `src/front/lower.c`. Each lowering code gets a `test/json` row with a `.json` and a `.fix`: `REFUSE_UNBOUNDED`, `REFUSE_LOWER`, `REFUSE_RUNTIME_CLOSURE`, `REFUSE_RUNTIME_TREE` and `REFUSE_TARGET_SECRET` (14 to 19 codes). | USER, S3 R3 (AskUserQuestion) |
 | 2026-11-02 | Q-S3-37, verbatim: "mcp check = check --json (Recommended)". The text of the mcp `check` tool stays the `check --json` line byte for byte, thus `test/mcp/check.out` (ids 2 to 4) and `test/mcp/kit-check.out` (id 2) get the `bounds` and `fails` keys (Q-S3-33). No code change. | USER, S3 R3 (AskUserQuestion) |
+| 2026-11-02 | Q-S4-1, verbatim: "Issuer ring (Recommended)". O11 closed. `att` is a ring signature with no key image on `(key, com)` over `ring`, a copy of `issuers` (capacity `maxIssuers` = 28, blsag.h:19). The ledger cannot see which issuer signed. An amendment that removes an issuer makes each attestation whose `ring` has it give `badAttest`; its holder gets a new attestation. | USER, S4 (AskUserQuestion) |
+| 2026-11-02 | Q-S4-2, verbatim: "Joint proof". O10 closed as (b). The two parties of a transfer make the R row proof together, and no party sees the claims of the other. `R` stays `Claims -> Claims -> Option Units`. PLAN 4.1:174-178 changes: only the attesting issuer sees the claims of a holder; the receiver does not give the opening of `com k` to the sender. S5 designs the two-party proof (much more code than the sender form); the S5 survey asks its form. | USER, S4 (AskUserQuestion) |
+| 2026-11-02 | Q-S4-3, verbatim: "Kit word rTable (Recommended)". The program writes `def table := rTable R`. `rTable` checks that `Juris` and `Status` are closed sums with no fields, evaluates `R` on each pair at check time and gives the admitted rows with their caps. `check --json` reports the row count. No reserved names. | USER, S4 (AskUserQuestion) |
+| 2026-11-02 | Q-S4-4, verbatim: "Except Identity (Recommended)". `attested : Constitution -> Identity -> Except Identity`: `exEta` of the identity when the ring signature verifies and each key of `ring` is in `issuers`, else `exFail badAttest`. `check --json` lists `badAttest` in `fails`. | USER, S4 (AskUserQuestion) |
+| 2026-11-02 | Q-S4-5, verbatim: "(a) CPoint (Recommended)". The domain adds `def CPoint : Type 0 := Prod U256 U256`, a curve point (the kit form of `claimCom`, `attestSign` and `attestVerify`); `Point` stays the x-only member key. `issuers : FreeMon CPoint`; `Identity (key : CPoint, com : CPoint, ring : List CPoint, att : List U256)`. `ringIn` folds `ring` (capacity `maxIssuers` = 28) with a member test in `issuers` (point equality by two U256 equalities). | USER, S4 BUILD2b (AskUserQuestion) |
+| 2026-11-03 | Q-S4-6, verbatim: "Covenant (Recommended)". The record of 4.3 is `Covenant`, with the maker `makeCovenant`. The kernel gives `Constitution` (the social-choice Sigma of orbit-lang, as in IsSelfConstituting) and the domain gives the family `Charter`, so a domain def with either name is `REFUSE_NAME` (rule R4). The plan prose keeps the word constitution. | USER, S4 BUILD2d (AskUserQuestion) |
+| 2026-11-03 | Q-S4-7, verbatim: "List of rows (Recommended)", "28 rows + 1024 pairs (Recommended)", "New key tables (Recommended)". `rTable R` has the type `List (Prod (Prod C C) Nat)` with `C = Prod Juris Status` (Units is S5, so S4 writes Nat): the admitted rows `pair (pair h k) cap` in constructor order, a static list. It is not an entry, so it has no bounds row and no lowering. REFUSE_UNBOUNDED when the admitted rows are more than 28 (BLSAG_RING_MAX: the S5 row proof is a 1-of-n OR over the rows) or the pairs \|J\|^2 \|S\|^2 are more than 1024 (check-time work). `check --json` has a new key `"tables":[{"def":"NAME","rows":N,"pairs":P}]` after `fails`, always present, so the 28 test/json/*.json lines get `,"tables":[]`. | USER, S4 BUILD3 (AskUserQuestion) |
+| 2026-11-03 | Q-S4-8, verbatim: "Generic + investor (Recommended)". R1 permits a family only in domain/domain.lang, so after the C5 block (Covenant, Identity): `family Juris := jurisA \| jurisB \| jurisC`, `family Status := retail \| accredited` (no fields), Claims in the Identity record form. examples/claims.lang declares no family. | USER, S4 BUILD3d (AskUserQuestion) |
+| 2026-11-03 | Q-S4-9, verbatim: "(a) Fix in S4 (Recommended)". Each def that lowers (closed or entry) and reaches a secret op (the `secret_op` set of `src/front/lower.c`, transitive over def refs) refuses REFUSE_TARGET_SECRET, so a closed def such as `k := zkKey 0` refuses too, though its value is a constant before the lowering. The gate ir arm accepts that code only for examples/zk.lang, examples/claims.lang and examples/zkcast.lang. The C8 mutant that drops the walk call is KILLED by test/json/REFUSE_TARGET_SECRET.closed. O4. | USER, S4 BUILD3i (AskUserQuestion) |
 
 The seed is `bin/new-lang.sh tranche-lang tcc-wasm` from lang-template
 5265a2a. Native code and EVM are not targets. EVM goes because the request
@@ -162,19 +171,20 @@ treasury)`. Parts I, H and P give `InterestState`. Part G gives `L`.
 |---|---|---|
 | Claims | defined | `(juris : Juris, status : Status)`, two closed sums that the program declares. interest-lang DESIGN.md:39: "jurisdiction, investor status, and (only at the representation layer) a wallet set". The wallet set is not here. The claims are private (Q-S0-5 (c)): the ledger holds only their commitment `com`. |
 | ClaimCom | defined | `com = juris * G1 + status * G2 + r * H`, a Pedersen commitment on secp256k1. `G1`, `G2` and `H` are fixed generators from hash to curve, so no one knows a relation between them. The holder keeps the opening `(claims, r)` secret (O4). |
-| Identity | defined | `(key : Point, com : Point, ring : FreeMon Point, att : RingSig)`. `ring` is a copy of `issuers` (4.3) when the issuer attests, with the capacity `maxIssuers` (N3). `att` is a ring signature on `(key, com)` over `ring` with no key image (the cairn-lang bLSAG code without the link). So `att` is a zero-knowledge proof that one key in `ring` signed, and it does not tell which key. The issuer sees the claims and `r` when it attests (V6). Q-S0-5 (c). |
-| attested | defined | `Constitution -> Identity -> Verdict`. A bad ring signature, or a key in `ring` that is not in `issuers`, gives `badAttest` (O11). |
-| R | slot | `Claims -> Claims -> Option Units`, a total program definition. `none` refuses the pair. `some cap` admits the pair with a bound. The compiler makes the table of `R` over the closed sums `Juris` and `Status`, so the table has a static number of rows (N8). The transfer proof shows, with the claims hidden, that `com h` and `com k` open to a row that `R` admits and that `q <= cap` of that row (4.2). interest-lang DESIGN.md:50-53: R "depends only on identity claims" and is "the image of securities compliance inside the model". Q-S0-5 (c). |
+| Identity | defined | `(key : CPoint, com : CPoint, ring : List CPoint, att : List U256)` (Q-S4-5 (a)). `ring` is a copy of `issuers` (4.3) when the issuer attests, with the capacity `maxIssuers` (N3). `att` is a ring signature on `(key, com)` over `ring` with no key image (the cairn-lang bLSAG code without the link; Q-S4-1 (a): the issuer ring, so the ledger cannot see which issuer signed). So `att` is a zero-knowledge proof that one key in `ring` signed, and it does not tell which key. The issuer sees the claims and `r` when it attests (V6). Q-S0-5 (c). |
+| attested | defined | `Covenant -> Identity -> Except Identity` (Q-S4-4). `exEta` of the identity when the ring signature verifies and each key of `ring` is in `issuers`. A bad ring signature, or a key in `ring` that is not in `issuers`, gives `exFail badAttest` (O11). |
+| R | slot | `Claims -> Claims -> Option Units`, a total program definition. `none` refuses the pair. `some cap` admits the pair with a bound. The compiler makes the table of `R` over the closed sums `Juris` and `Status`, so the table has a static number of rows (N8). The transfer proof shows, with the claims hidden, that `com h` and `com k` open to a row that `R` admits and that `q <= cap` of that row (4.2). The kit word `rTable R` gives the table (Q-S4-3, Q-S4-7): the type `List (Prod (Prod C C) Nat)` with `C = Prod Juris Status` (Units is S5, so S4 writes Nat), the admitted rows `pair (pair h k) cap` in constructor order. More than 28 rows or more than 1024 pairs is `REFUSE_UNBOUNDED`. interest-lang DESIGN.md:50-53: R "depends only on identity claims" and is "the image of securities compliance inside the model". Q-S0-5 (c). |
 
 interest-lang DESIGN.md:111 reads ERC-3643: "R reads claim topics from
 trusted issuers", and `canTransfer` decides R. Here `R` with `attested` is
 that decision. DESIGN.md:113: "The trusted-issuer set is part of the
 constitution and is amendable only through Gov".
 
-Who sees the claims (Q-S0-5 (c)): the issuer that attests, and the two
-parties of a transfer. The receiver gives the sender the opening of
-`com k` off the ledger, so that the sender can make the R row proof
-(O10). The ledger, the committees and the other holders see only `com`
+Who sees the claims (Q-S0-5 (c), Q-S4-2 (b)): only the issuer that
+attests. The two parties of a transfer make the R row proof together (a
+joint proof, O10), and no party sees the claims of the other: the
+receiver does not give the opening of `com k` to the sender. The
+ledger, the committees and the other holders see only `com`
 and `ring`. They do not see the claims or the issuer that signed (O11).
 
 ### 4.2 Part H: the encrypted holdings and the transfer
@@ -188,7 +198,7 @@ and `ring`. They do not see the claims or the issuer that signed (O11).
 | decryptIn | defined | N7. The holder runs it on `own` with its secret key. The committee runs it only through `open` (4.3): on a tally, and on the sum of the `pub` ciphertexts. |
 | TransferProof | defined | One `ZKProof` (4.5) that is a Sigma composition of the cairn-lang proofs (`src/front/sigma.c`): (1) the ciphertexts of `q` under `key h`, `key k` and `keyOpen` share one plaintext (DLEQ); (2) `q` is in `[0, 2^B)` (one disjunctive Chaum-Pedersen bit proof for each bit); (3) `mu(h) - q` is in `[0, 2^B)` (the same bit proofs on a fresh ciphertext, and a proof with the secret key of `h` that it equals `own h - q`); (4) the R row (4.1, Q-S0-5 (c)): a 1-of-n proof, with one branch for each row that `R` admits (a static number, N8), that `com h` and `com k` open to the claims of the row and that a fresh ciphertext `capC` under `key h` encrypts the cap of the row; (5) `q <= cap` (the same bit proofs on `capC` minus the ciphertext of `q` under `key h`). |
 | Transfer | defined | `(from, to : Identity, q : three Ct, proof : TransferProof, sig)`. `sig` is a Schnorr signature of `key from` on the digest. |
-| transfer | defined | `Constitution -> Measure -> Transfer -> Except Fail Measure`. interest-lang DESIGN.md:65: tau(h, k, q) "is defined iff R(h, k, q) and q <= mu(h)", and then it subtracts `q` from `h` and adds `q` to `k`. Here: `attested` for both, the proof (with the R row of the hidden claims, Q-S0-5 (c)), the signature, then `own h - q`, `pub h - q`, `own k + q`, `pub k + q` by the homomorphic operations. `bal` does not change. Each check that fails gives its `Fail` value. |
+| transfer | defined | `Covenant -> Measure -> Transfer -> Except Fail Measure`. interest-lang DESIGN.md:65: tau(h, k, q) "is defined iff R(h, k, q) and q <= mu(h)", and then it subtracts `q` from `h` and adds `q` to `k`. Here: `attested` for both, the proof (with the R row of the hidden claims, Q-S0-5 (c)), the signature, then `own h - q`, `pub h - q`, `own k + q`, `pub k + q` by the homomorphic operations. `bal` does not change. Each check that fails gives its `Fail` value. |
 
 Conservation holds by the group law: the same ciphertext of `q` leaves
 `pub h` and enters `pub k`, so the sum of the `pub` ciphertexts does not
@@ -208,20 +218,20 @@ voter orbit. It waits for a slice (O7).
 | Name | Kind | Reading |
 |---|---|---|
 | Member | defined | `Point`: one public key. Members vote. Holders do not vote by their units (Q-S0-7). |
-| Constitution | defined record | The cairn-lang `Polity` (cairn-lang docs/PLAN.md:170, 60768e8) plus `issuers : FreeMon Point`, `keyPay`, `tPay`, and `policy : Option D`, the policy in force. With Q-S0-8 (b), `(R, W)` changes only with a whole new constitution. The keys come from the DKG; there is no trusted dealer. |
+| Covenant | defined record | Not the kernel `Constitution` of IsSelfConstituting (Q-S4-6). The cairn-lang `Polity` (cairn-lang docs/PLAN.md:170, 60768e8) plus `issuers : FreeMon CPoint` (Q-S4-5 (a)), `keyPay`, `tPay`, and `policy : Option D`, the policy in force. With Q-S0-8 (b), `(R, W)` changes only with a whole new constitution. The keys come from the DKG; there is no trusted dealer. |
 | D | defined | `Nat` below `decisions`: the admissible policies that the program declares. `policyOf : D -> Prod R W` is a total program definition. The objects of `F` "include the admissible (R, W)" (interest-lang DESIGN.md:59). |
 | Tally | defined | `Units`: the opened homomorphic sum of the yes votes on one proposal (the cairn-lang tally). This is the orbit quotient: the count, never who voted what (orbit-lang DESIGN.md:29). |
 | Gov, GovPi | defined | `Gov` = `amendAll` (cairn-lang): the fold of the decided amendments in ledger order. `GovPi` = `policyOf` of the `policy` of the constitution that `Gov` gives (`none` when the `policy` is `none`). orbit-lang DESIGN.md:35: `Gov L := orbitProjection act >>> L.functor`. |
-| AmendBallot | defined | The cairn-lang ballot: `Enc Bool` with its proof and its bLSAG (cairn-lang `src/front/blsag.c`), on a whole new `Constitution`. The key image of the bLSAG is the nullifier: one ballot for each member (orbit-lang law 5, DESIGN.md:112). `decide` = `yes >= tAmend`. With Q-S0-8 (b) it is the only ballot: a new policy is a new constitution. |
+| AmendBallot | defined | The cairn-lang ballot: `Enc Bool` with its proof and its bLSAG (cairn-lang `src/front/blsag.c`), on a whole new `Covenant`. The key image of the bLSAG is the nullifier: one ballot for each member (orbit-lang law 5, DESIGN.md:112). `decide` = `yes >= tAmend`. With Q-S0-8 (b) it is the only ballot: a new policy is a new constitution. |
 | Fate | defined | `impossible | debreu D`: orbit-lang law 6 (DESIGN.md:117), `Empty + (unique L) + (L0 x L1)`. `fateOf` reads the `policy` in force: `none` gives `impossible`, `some d` gives `debreu d`. Under Q-S0-8 (b) the `ising` summand has no inhabitant (section 5). |
 | IsSelfConstituting | defined | orbit-lang DESIGN.md:91: `Sigma (L : Aggregation), Path Constitution (gov L) F`. A program gives the witness as a path; the kernel checks it (L13). |
 | Share, open | primitive | Partial decryption with a DLEQ proof; `tOpen` valid shares combined by Lagrange (MPC, cairn-lang `src/front/threshold.c`). `open` gives `noQuorum` below `tOpen` valid shares, and it names each dropped party in its result (N6). |
 | Deal, Reshare | primitive | cairn-lang `src/front/dkg.c`: Pedersen DKG with Feldman commitments, and reshare when `members` or a threshold changes. |
 
-Self-reference: an amendment is a whole `Constitution`, so the polity can
+Self-reference: an amendment is a whole `Covenant`, so the polity can
 amend `tAmend`, `issuers` and `policy`. Each ballot is decided by the
 constitution in force when it opens. A chain of amendments is a fold over
-`FreeMon Constitution` (the cairn-lang `amendAll`). interest-lang
+`FreeMon Covenant` (the cairn-lang `amendAll`). interest-lang
 DESIGN.md:81: amendment "does not move mu or the treasury" (L8).
 DESIGN.md:83: compliance labels and voter anonymity are different actions,
 so a ballot never carries the claims of an identity.
@@ -236,7 +246,7 @@ so a ballot never carries the claims of an identity.
 | claim | defined | With Q-S0-6 (b) each claim is an encrypted balance. `u = mulDiv A (2^P) supply` when `supply > 0`, else `0`: the public credit for each unit, in units of `2^-P` of the asset (O8). The claim of `h` is `mu(h) * u`, and the ledger adds it to `bal h` as `scale u (own h)` by the homomorphic operations: no proof and no open. interest-lang DESIGN.md:42 has the claim `mu(h) / supply * A`; `mu(h) * u / 2^P` is below it by less than `mu(h) / 2^P` base units. |
 | distribute | defined | `Fate -> Measure -> Inflow -> Except Fail (Prod Measure U256)`. Under `impossible` it credits nothing, and the inflow stays in the treasury (DESIGN.md:73: "funds stay in the treasury, neither burned nor silently paid"). Under `debreu d` it takes `A = W k a`. If `supply = 0`, it credits nothing and retains all of the inflow, with `u = 0` and `res A = A * 2^P`. Otherwise it checks the public lifetime total `distributed + A < 2^(Bbal - P)` before computing `u` or changing any balance, then adds `claim` to each `bal h`, increments `distributed` by `A`, and keeps the residual. Equality with the limit or an overflow gives `full` and leaves the state unchanged (O8). It opens nothing. |
 | Withdraw | defined | `(id : Identity, w : U256, proof : WithdrawProof, sig)`. `WithdrawProof`: with the secret key of `id`, the bit proofs (4.2) that `bal h - w * 2^P` is in `[0, 2^Bbal)`. `sig` is a Schnorr signature of `key id` on the digest. |
-| withdraw | defined | `Constitution -> Measure -> Withdraw -> Except Fail (Prod Measure Instruction)`: first check the public integer bound `w < 2^(Bbal - P)` (`outOfRange` otherwise), then the proof against the current `bal h` and the signature, then subtract `w * 2^P` and give an `Instruction` to `key id` for `w`. The bound is checked before conversion to `Scalar`; no reduction modulo the group order can establish it. Together with the balance bound and `2^(Bbal + 1) < n` (O8), the residual range proof establishes integer non-underflow. The holder program gives `overBalance` before it makes the proof when `w * 2^P` is above its balance. |
+| withdraw | defined | `Covenant -> Measure -> Withdraw -> Except Fail (Prod Measure Instruction)`: first check the public integer bound `w < 2^(Bbal - P)` (`outOfRange` otherwise), then the proof against the current `bal h` and the signature, then subtract `w * 2^P` and give an `Instruction` to `key id` for `w`. The bound is checked before conversion to `Scalar`; no reduction modulo the group order can establish it. Together with the balance bound and `2^(Bbal + 1) < n` (O8), the residual range proof establishes integer non-underflow. The holder program gives `overBalance` before it makes the proof when `w * 2^P` is above its balance. |
 | Instruction | defined | `(payee : Point, asset : Digest, amount : U256, pos : OpPos)`: the output of `withdraw`. |
 | PayAuth, paySnoc | defined | The accrue-lang S7 form, ported: `family PayAuth := payAuthOf (payR : U256) (payZ : U256)`, `payOk` checks `schnorrOk` under `keyPay` on `(ixHead log, ixDigest p)`, and `paySnoc` adds an entry only with a valid `PayAuth` and a digest that is not in the log (accrue-lang domain/domain.lang:606-613, d1017f1). |
 | Treasury | defined | The fold of the ledger, in units of `2^-P` (O8): each inflow adds `a * 2^P`, each distribution takes `u * supply`. It keeps `a - W k a` and the residual `res A`. A withdrawal takes from `bal h`, not from the treasury. |
@@ -328,7 +338,7 @@ computational assumption that no path can prove (docs/VALIDATION.md).
 | L2 conservation | the sum of the `pub` ciphertexts is the same after a transfer; `supply` is the same |
 | L3 chains | two admissible transfers in sequence give the same measure as their composite, when it is admissible |
 | L4 disjoint | two transfers on disjoint identities commute |
-| L5 R gate | `transfer` is `some` only when both are `attested` and the R row proof holds; by its soundness (V3) `R` admits the hidden pair and `q <= cap`. A success while R fails is a leak (DESIGN.md:65). Q-S0-5 (c) |
+| L5 R gate | `transfer` is `some` only when both are `attested` and the joint R row proof holds (Q-S4-2); by its soundness (V3) `R` admits the hidden pair and `q <= cap`. A success while R fails is a leak (DESIGN.md:65). Q-S0-5 (c) |
 | L6 sum with residual | `Sum_h mu(h) * u + res A = A * 2^P`; if `supply > 0`, `res A < supply`; if `supply = 0`, `u = 0` and `res A = A * 2^P` (4.4) |
 | L7 claims travel | a transfer, then `distribute`, gives the same credits as `distribute` on the image measure (DESIGN.md:73); a transfer moves no balance |
 | L8 amend | an amendment leaves `mu`, the balances and the treasury (DESIGN.md:81) |
@@ -437,8 +447,8 @@ kills at least one mutant of it.
 | S1 | The USER rules section 12. Record the rulings here. | DONE: section 1 (Q-S0-5 (c), Q-S0-6 (b), Q-S0-8 (b), each other question (a)); sections 2 to 11 read them |
 | S2 | Port the cairn-lang diff e222eba..60768e8 (7.1). Survey first: SAME, CHANGED, CAIRN-ONLY. | DONE: survey 52 SAME, 2 CHANGED (README.md and this file, kept), 418 CAIRN-ONLY; `git apply` of 470 files with no reject. The name change: 27 self-name sites (the MCP server name and tool texts, 9 `test/mcp` replies, 7 comments, the `REFUSE_NAME` fix `trancheHead`); 16 citations of cairn-lang slices and the 11 tag comments stay (S2-Q1 (a)). `make -B check` EXIT 0; the 56 count lines equal cairn-lang S13. |
 | S3 | R0: N1, N5 to N8 in the kernel and eval; `Except Fail`; `REFUSE_PARTIAL`, `REFUSE_UNBOUNDED`; checked `U256`, `mulDiv`. | DONE: R1 the kernel and the eval (N1, N5, N6, `REFUSE_PARTIAL`, HistBind); R2 the entry ABI with no trap (a status out-param, Q-S3-22, Q-S3-23); R3 `elg_log` with a static table (N7, Q-S3-27), `upTo K` loops, N8 `bounds` and `fails` in `check --json` with `REFUSE_UNBOUNDED` (Q-S3-32 to Q-S3-36), mcp `check` = `check --json` (Q-S3-37). `make check` EXIT 0: examples 59, evals 275, json rows 28, json refusal codes 19 of 19, json fixes 24. |
-| S4 | Part I: Claims, ClaimCom, Identity with the issuer ring signature, `attested`, `issuers`, the slot `R` and its table; L5 (O10, O11). | NEXT |
-| S5 | Part H: Units, `decryptIn`, Holding, Measure, TransferProof with the R row proof, `transfer`; L1 to L4, L17. | |
+| S4 | Part I: Claims, ClaimCom, Identity with the issuer ring signature, `attested`, `issuers`, the slot `R` and its table; L5 (O10, O11). | DONE: C1 the ring signature with no key image (`src/front/ringsig.c`, Q-S4-1 (a)); C2 the claim commitment (`src/front/claimcom.c`); C3 and C4 the kit words `claimCom` and `attestSign` (secret, `REFUSE_TARGET_SECRET`) and `attestVerify` (`REFUSE_LOWER` until S8); C5 `Covenant`, `Identity`, `ringIn`, `attested`, the families `Juris` and `Status` (Q-S4-4 to Q-S4-6, Q-S4-8); C6 `rTable` and the `tables` key of `check --json` (Q-S4-3, Q-S4-7); C7 `examples/claims.lang`; the def rule of `REFUSE_TARGET_SECRET` (Q-S4-9 (a)); C8 5 of 5 mutants KILLED. O10 and O11 closed. `make check` EXIT 0: examples 60, evals 295, ir 55 lowered, json rows 33, json refusal codes 19 of 19, json fixes 28. |
+| S5 | Part H: Units, `decryptIn`, Holding, Measure, TransferProof with the joint R row proof (Q-S4-2), `transfer`; L1 to L4, L17. | NEXT |
 | S6 | Part G: `D`, `policyOf`, the `policy` of the constitution, the AmendBallot tally, `Gov` as `amendAll`, `GovPi`, Fate, IsSelfConstituting; L9 to L16. | |
 | S7 | Part P: W, Inflow, `claim`, `distribute`, the claim balances, Withdraw, `withdraw`, Instruction, PayAuth (from accrue-lang), Treasury; L6 to L8, L18 (O8). | |
 | S8 | Targets: lowering of the new words on Wasm, ES and WGSL; N4, `test/notraptool.c`, the N8 measure; differential vectors. | |
@@ -460,7 +470,11 @@ kills at least one mutant of it.
 - O4 The secret marks for `REFUSE_TARGET_SECRET`: the secret key of a
   holder, the key shares, the nonces and, with Q-S0-5 (c), the claim
   opening `(claims, r)`. S4 marks the claim opening and S5 marks the
-  holder key in the types.
+  holder key in the types. The def rule (Q-S4-9 (a)): each def that
+  lowers (closed or entry) and reaches a secret op, transitive over def
+  refs, refuses `REFUSE_TARGET_SECRET`. The secret ops are the
+  `secret_op` set of `src/front/lower.c`; the refusal message cites them
+  as O6 (the cairn-lang PLAN item).
 - O5 The test vectors come from the published standards (NIST CAVP for
   SHA-256, SEC 2 for secp256k1, the FROST RFC 9591 vectors), not from an
   implementation that the gate would trust.
@@ -491,6 +505,7 @@ kills at least one mutant of it.
   claims of the other; much more code), or an `R` in two parts, one for
   the sender and one for the receiver (each party proves its part; the
   cap is the smaller of the two caps). The USER rules it before S5.
+  Closed: Q-S4-2 (b).
 - O11 Revocation with the issuer ring (4.1, Q-S0-5 (c)). The ring hides
   the issuer that signed, so the polity cannot revoke the attestations of
   one issuer alone. When an amendment removes an issuer, each attestation
@@ -498,6 +513,7 @@ kills at least one mutant of it.
   new attestation. The other form: a Schnorr signature by a named issuer
   on `(key, com)`. It keeps the claims private and revokes by issuer, but
   it shows the issuer. The USER rules it before S4.
+  Closed: Q-S4-1 (a).
 - O12 The domain tags of the port are the cairn-lang tags (S2-Q1 (a)):
   the ASCII words "cairn", "cairn-genesis", "cairn-append", "cairn-out",
   "cairn-auth", "cairn-authw" and "cairn-rho" as hex constants. A later

@@ -1,0 +1,7 @@
+-- REFUSE_UNBOUNDED (S4 C6, Q-S4-7): R over C = Claims admits 29 rows. This
+-- is one row over the rows cap of 28. The fix makes R give none for each h
+-- at jurisC, thus R admits 17 rows.
+def R : Claims -> Claims -> Option Nat :=
+  fun (h : Claims) (k : Claims) => fold (fold none (fold (some 4) none (second k)) (some 1) (first k)) (fold (fold (some 7) (some 7) (fold (some 8) none (second k)) (first k)) (some 2) (second h)) (some 3) (first h)
+
+def table : List (Prod (Prod Claims Claims) Nat) := rTable R

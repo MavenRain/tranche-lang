@@ -1,0 +1,12 @@
+-- attestVerify has no target form until S8 (tranche-lang S4 C4): a
+-- run-time key gives REFUSE_LOWER (a host proof check). The ring keys
+-- are the public points 2G and 3G: a ring from zkKey refuses
+-- REFUSE_TARGET_SECRET first (Q-S4-9 (a)).
+def g : Prod U256 U256 :=
+  pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u
+
+def ring : Option (List (Prod U256 U256)) :=
+  bind (ecMul g 2u) (fun (a : Prod U256 U256) => bind (ecMul g 3u) (fun (b : Prod U256 U256) => some (cons a (cons b nil))))
+
+def ok : (x : U256) -> Option Flag :=
+  fun (x : U256) => bind ring (fun (rg : List (Prod U256 U256)) => attestVerify rg (pair x x) g (cons 1u (cons 2u nil)))

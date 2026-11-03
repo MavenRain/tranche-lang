@@ -918,9 +918,61 @@ static int unbounded(Low *l, const char *loop) {
 
 /* An operation on a secret key or a witness (the zk key, sign, witness, cast
    and prove operations) has no form on any target: a module is public
-   (cairn-lang S9, Q-S9-3, PLAN O6). */
+   (cairn-lang S9, Q-S9-3, PLAN O6). claimCom (the opening of a claim)
+   and attestSign (the issuer key) are secret too (S4 C4, O4). */
 static int secret_op(Low *l) {
   return diag_fail(l->m->diag, "REFUSE_TARGET_SECRET", l->m->def, "the operation touches a secret key or a witness (O6)");
+}
+
+/* Q-S4-9 (a), O6: a def that lowers (closed or entry) and reaches a secret
+   op refuses as secret_op does. The evaluator reduces a closed secret op
+   (zkKey 0) to a constant, so lower_canon does not see it: this walk reads
+   the syntax of the def and of each def that it names, transitively. SEEN
+   marks each def once, so a cycle ends. The ops are the secret_op arm of
+   lower_canon. */
+static int secret_kind(Op op) {
+  return op == OP_ZK_KEY || op == OP_ZK_SIGN || op == OP_ZK_WITNESS || op == OP_ZK_CAST || op == OP_ZK_PROVE || op == OP_CLAIM_COM || op == OP_ATTEST_SIGN;
+}
+
+static int secret_reach(const Machine *m, unsigned char *seen, const Core *t) {
+  uint32_t i;
+  if (t == NULL)
+    return 0;
+  switch (t->kind) {
+  case CORE_VAR:
+  case CORE_NAT:
+  case CORE_WORD:
+  case CORE_UNIV:
+  case CORE_IZERO:
+  case CORE_IONE:
+    return 0;
+  case CORE_GLOBAL:
+    if (seen[t->index])
+      return 0;
+    seen[t->index] = 1;
+    return secret_reach(m, seen, m->defs[t->index].body);
+  case CORE_LAM:
+  case CORE_PI:
+  case CORE_SIGMA:
+  case CORE_APP:
+  case CORE_PLAM:
+  case CORE_INEG:
+  case CORE_IMEET:
+  case CORE_IJOIN:
+    return secret_reach(m, seen, t->a) || secret_reach(m, seen, t->b);
+  case CORE_PATHP:
+  case CORE_PAPP:
+    return secret_reach(m, seen, t->a) || secret_reach(m, seen, t->b) || secret_reach(m, seen, t->args[0]) || secret_reach(m, seen, t->args[1]);
+  case CORE_OP:
+    break;
+  }
+  if (secret_kind(t->op))
+    return 1;
+  for (i = 0; i < t->argc; i++) {
+    if (secret_reach(m, seen, t->args[i]))
+      return 1;
+  }
+  return 0;
 }
 
 /* The prelude function CALL applied to the N words of ARGS. */
@@ -1057,6 +1109,10 @@ static int lower_canon(Low *l, Buf *b, const Value *v, Operand *out) {
   case OP_ZK_DIGEST:
   case OP_ZK_SIGN:
   case OP_ZK_VERIFY:
+  case OP_CLAIM_COM:
+  case OP_ATTEST_SIGN:
+  case OP_ATTEST_VERIFY:
+  case OP_RTABLE:
   case OP_ZK_BALLOT:
   case OP_ZK_WITNESS:
   case OP_ZK_CAST:
@@ -2173,6 +2229,8 @@ static int lower_stuck(Low *l, Buf *b, const Value *v, Operand *out) {
   case OP_ZK_WITNESS:
   case OP_ZK_CAST:
   case OP_ZK_PROVE:
+  case OP_CLAIM_COM:
+  case OP_ATTEST_SIGN:
     return secret_op(l);
   case OP_ZK_HP:
   case OP_ZK_DIGEST:
@@ -2180,7 +2238,10 @@ static int lower_stuck(Low *l, Buf *b, const Value *v, Operand *out) {
   case OP_ZK_BALLOT:
   case OP_ZK_PROJECT:
   case OP_ZK_CHECK:
+  case OP_ATTEST_VERIFY:
     return refuse(l, "a host proof check (zk)");
+  case OP_RTABLE: /* S4 C6: the checker gives the static list, so no core has it */
+    return internal(l, "an rTable after the check");
   }
   return internal(l, "an unknown operation");
 }
@@ -2268,6 +2329,7 @@ static int lower_entry(Machine *m, uint32_t index, const Entry *e, IrFunc *fn) {
   Buf trap = buf_under(NULL);
   Buf none = buf_under(NULL);
   IrScalar *params = arena_alloc(m->arena, ((size_t)e->param_count + 1u) * sizeof *params);
+  unsigned char *seen = arena_alloc(m->arena, (size_t)m->def_count + 1u);
   const Value *v;
   const Value *x;
   Operand r;
@@ -2277,8 +2339,12 @@ static int lower_entry(Machine *m, uint32_t index, const Entry *e, IrFunc *fn) {
   l.local_count = e->param_count;
   m->def = m->defs[index].name;
   m->fuel = EVAL_FUEL_STEPS;
-  if (params == NULL)
+  if (params == NULL || seen == NULL)
     return oom(&l);
+  memset(seen, 0, (size_t)m->def_count + 1u);
+  seen[index] = 1;
+  if (secret_reach(m, seen, m->defs[index].body))
+    return secret_op(&l);
   v = def_value(m, index);
   for (k = 0; k < e->param_count && v != NULL; k++) {
     params[k] = e->param_flag[k] ? IR_SCALAR_FLAG : e->param_u256[k] ? IR_SCALAR_U256 : IR_SCALAR_NAT;

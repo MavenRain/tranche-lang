@@ -339,6 +339,72 @@ def keyAppend : Polity -> Point := fun (s : Polity) => second (second (second (s
 def polityIsSet : isSet Polity :=
   isSetProd (FreeMon Point) (Prod Nat (Prod Nat (Prod Nat (Prod Point Point)))) (fmIsSet Point) (isSetProd Nat (Prod Nat (Prod Nat (Prod Point Point))) natIsSet (isSetProd Nat (Prod Nat (Prod Point Point)) natIsSet (isSetProd Nat (Prod Point Point) natIsSet (isSetProd Point Point u256IsSet u256IsSet))))
 
+-- The covenant and the identity (S4, Q-S4-1 (a), Q-S4-4 (a), Q-S4-5 (a)
+-- and Q-S4-6: the name Covenant is the social-choice one of the
+-- kernel). A CPoint is a full secp256k1 point (x, y), the form of the kit
+-- words claimCom, attestSign and attestVerify. A Covenant holds the Polity
+-- in force and the issuers, the keys that can sign an attestation. S6 and
+-- S7 add fields the same way, so the Polity projections stay. An Identity
+-- holds the holder key, the claim commitment, the issuer ring and the ring
+-- signature. ringIn tests that each key of the ring is an issuer.
+-- attestVerify gives none on a ring over 28 keys (maxIssuers), so the fold
+-- of ringIn has that bound when attested runs it. attested gives the
+-- identity when the signature verifies and the ring is in the issuers,
+-- else the failure badAttest.
+def CPoint : Type 0 := Prod U256 U256
+
+def cpointIsSet : isSet CPoint := isSetProd U256 U256 u256IsSet u256IsSet
+
+def Covenant : Type 0 := Prod Polity (FreeMon CPoint)
+
+def makeCovenant : Polity -> FreeMon CPoint -> Covenant :=
+  fun (s : Polity) (m : FreeMon CPoint) => pair s m
+
+def polity : Covenant -> Polity := fun (n : Covenant) => first n
+
+def issuers : Covenant -> FreeMon CPoint := fun (n : Covenant) => second n
+
+def Identity : Type 0 := Prod CPoint (Prod CPoint (Prod (List CPoint) (List U256)))
+
+def makeIdentity : CPoint -> CPoint -> List CPoint -> List U256 -> Identity :=
+  fun (k : CPoint) (c : CPoint) (rg : List CPoint) (s : List U256) => pair k (pair c (pair rg s))
+
+def idKey : Identity -> CPoint := fun (d : Identity) => first d
+
+def idCom : Identity -> CPoint := fun (d : Identity) => first (second d)
+
+def idRing : Identity -> List CPoint := fun (d : Identity) => first (second (second d))
+
+def idAtt : Identity -> List U256 := fun (d : Identity) => second (second (second d))
+
+def cpointEq : CPoint -> CPoint -> Flag :=
+  fun (p : CPoint) (q : CPoint) => flagIf (u256Eq (first p) (first q)) (u256Eq (second p) (second q)) flagNo
+
+def isIssuer : Covenant -> CPoint -> Flag :=
+  fun (n : Covenant) (p : CPoint) => fmChain CPoint Flag flagIsSet (fun (f : Flag) (x : CPoint) => flagIf (cpointEq x p) flagYes f) flagNo (issuers n)
+
+def ringIn : Covenant -> List CPoint -> Flag :=
+  fun (n : Covenant) (rg : List CPoint) => fold (fun (x : CPoint) (f : Flag) => flagIf (isIssuer n x) f flagNo) flagYes rg
+
+def attested : Covenant -> Identity -> Except Identity :=
+  fun (n : Covenant) (d : Identity) => option (exFail Identity badAttest) (fun (v : Flag) => flagIf v (flagIf (ringIn n (idRing d)) (exEta Identity d) (exFail Identity badAttest)) (exFail Identity badAttest)) (attestVerify (idRing d) (idKey d) (idCom d) (idAtt d))
+
+-- The claims (S4, Q-S4-8 (a)). Juris and Status are closed sums with no
+-- fields, so the kit word rTable can evaluate R on each pair of claims at
+-- check time. A Claims is the pair (juris, status) of PLAN 4.1, in the
+-- Identity record form. Only this file can declare a family (rule R1).
+family Juris := jurisA | jurisB | jurisC
+
+family Status := retail | accredited
+
+def Claims : Type 0 := Prod Juris Status
+
+def makeClaims : Juris -> Status -> Claims := fun (j : Juris) (s : Status) => pair j s
+
+def claimJuris : Claims -> Juris := fun (c : Claims) => first c
+
+def claimStatus : Claims -> Status := fun (c : Claims) => second c
+
 -- The append check (S7, Q-S7-1, Q-S7-2 and Q-S7-6 (a)). An Auth is a
 -- threshold Schnorr signature (R.x, z) of the keyAppend committee on the
 -- message (head r, e). The host signs with FROST (src/front/frost.c), and

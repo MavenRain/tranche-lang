@@ -434,6 +434,7 @@ static int check_json(const Options *opt, Arena *arena, const char *text, size_t
   size_t i;
   memset(&progress, 0, sizeof progress);
   memset(&prog, 0, sizeof prog);
+  memset(&machine, 0, sizeof machine);
   int ok = front_load(arena, opt->prog_path, text, len, &decls, diag)
       && check_program_progress(arena, &decls, &machine, diag, opt->mode, &progress)
       && lower_program(&machine, &prog, NULL);
@@ -443,7 +444,8 @@ static int check_json(const Options *opt, Arena *arena, const char *text, size_t
     ok = ir_bound(&machine, &prog.funcs[i], &bounds[i]);
   ok = ok && fail_rows(&machine, &fails, &fail_count);
   if (!ok && diag->code != NULL && strcmp(diag->code, "OOM") == 0) return 2;
-  json_check(opt->out, opt->prog_path, diag, &progress, &prog, bounds, fails, fail_count);
+  json_check(opt->out, opt->prog_path, diag, &progress, &prog, bounds, fails, fail_count, machine.tables,
+             machine.table_count);
   return ok ? 0 : 1;
 }
 

@@ -637,6 +637,11 @@ int main(int argc, char **argv) {
   ok &= normal_roundtrip("Prod U256 U256 -> Option (Prod U256 U256)", "fun (p : Prod U256 U256) => zkHp p");
   ok &= normal_roundtrip("List (Prod U256 U256) -> Option U256", "fun (ring : List (Prod U256 U256)) => zkDigest ring");
   ok &= normal_roundtrip("List U256 -> Option Flag", "fun (sig : List U256) => zkVerify (cons (pair 1u 2u) nil) 0u 1u sig");
+  ok &= zk_none("Option (Prod U256 U256)", "claimCom 1 1 0u");
+  ok &= zk_none("Option (List U256)", "attestSign (cons bad nil) 1u (pair 1u 2u) (pair 1u 2u)");
+  ok &= zk_none("Option Flag", "attestVerify (cons bad nil) bad bad (cons 1u (cons 2u nil))");
+  ok &= normal_roundtrip("U256 -> Option (Prod U256 U256)", "fun (r : U256) => claimCom 1 0 r");
+  ok &= normal_roundtrip("List U256 -> Option Flag", "fun (sig : List U256) => attestVerify (cons (pair 1u 2u) nil) (pair 1u 2u) (pair 3u 4u) sig");
   /* The empty domain (sealed-lang S2, R21) lexes, parses and checks. */
   ok &= domain("", NULL);
   /* Elimination consumes its scrutinee before applying a functional result. */

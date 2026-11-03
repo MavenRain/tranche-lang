@@ -120,3 +120,56 @@ def curve2 : Nat -> Option Flag :=
 
 def curveG : Nat -> Option Flag :=
   fun (n : Nat) => bind ring2 (fun (rg : List (Prod U256 U256)) => bind (ecMul g (toU256 n)) (fun (q : Prod U256 U256) => zkVerify rg 0u 1u (cons c1 (cons s1 (cons s2 (cons (first q) (cons (second q) nil)))))))
+
+-- The claim commitment and the issuer ring signature (tranche-lang S4 C3,
+-- Q-S4-1 (a)): claimCom 0 0 1u is H; r = 0 and r = n give none. att2 signs
+-- (p2, comH) over ring2 with k0; k2 is not in ring2.
+def comH : Option (Prod U256 U256) := claimCom 0 0 1u
+
+def comZero : Option (Prod U256 U256) := claimCom 1 1 0u
+
+def comN : Option (Prod U256 U256) :=
+  claimCom 1 1 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141u
+
+def att2 : Option (List U256) :=
+  bind ring2 (fun (rg : List (Prod U256 U256)) => bind p2 (fun (k : Prod U256 U256) => bind comH (fun (c : Prod U256 U256) => attestSign rg k0 k c)))
+
+def attOut : Option (List U256) :=
+  bind ring2 (fun (rg : List (Prod U256 U256)) => bind p2 (fun (k : Prod U256 U256) => bind comH (fun (c : Prod U256 U256) => attestSign rg k2 k c)))
+
+def attOffKey : Option (List U256) :=
+  bind ring2 (fun (rg : List (Prod U256 U256)) => bind comH (fun (c : Prod U256 U256) => attestSign rg k0 (pair 1u 1u) c))
+
+def attOk : Option Flag :=
+  bind ring2 (fun (rg : List (Prod U256 U256)) => bind p2 (fun (k : Prod U256 U256) => bind comH (fun (c : Prod U256 U256) => bind att2 (fun (s : List U256) => attestVerify rg k c s))))
+
+def attOther : Option Flag :=
+  bind ring2 (fun (rg : List (Prod U256 U256)) => bind p2 (fun (k : Prod U256 U256) => bind att2 (fun (s : List U256) => attestVerify rg k g s)))
+
+def attShort : Option Flag :=
+  bind ring2 (fun (rg : List (Prod U256 U256)) => bind p2 (fun (k : Prod U256 U256) => bind comH (fun (c : Prod U256 U256) => attestVerify rg k c (cons 1u nil))))
+
+def attOffCom : Option Flag :=
+  bind ring2 (fun (rg : List (Prod U256 U256)) => bind p2 (fun (k : Prod U256 U256) => bind att2 (fun (s : List U256) => attestVerify rg k (pair 1u 1u) s)))
+
+-- The attested check (tranche-lang S4 C5, Q-S4-4 (a) and Q-S4-5 (a)): the
+-- issuers of con2 are p0 and p1, of con1 only p0. idYes is att2 over
+-- ring2; idBadAtt has a bad att; idRemoved is idYes under con1; idNotIssuer
+-- is a good signature over ring3, and p2 of ring3 is not an issuer.
+def con2 : Option Covenant :=
+  bind p0 (fun (a : CPoint) => bind p1 (fun (b : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmCons CPoint a (fmCons CPoint b (fmUnit CPoint))))))
+
+def con1 : Option Covenant :=
+  bind p0 (fun (a : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmCons CPoint a (fmUnit CPoint))))
+
+def idYes : Option (Except Identity) :=
+  bind con2 (fun (n : Covenant) => bind ring2 (fun (rg : List CPoint) => bind p2 (fun (k : CPoint) => bind comH (fun (c : CPoint) => bind att2 (fun (s : List U256) => some (attested n (makeIdentity k c rg s)))))))
+
+def idBadAtt : Option (Except Identity) :=
+  bind con2 (fun (n : Covenant) => bind ring2 (fun (rg : List CPoint) => bind p2 (fun (k : CPoint) => bind comH (fun (c : CPoint) => some (attested n (makeIdentity k c rg (cons 1u (cons 1u (cons 1u nil)))))))))
+
+def idRemoved : Option (Except Identity) :=
+  bind con1 (fun (n : Covenant) => bind ring2 (fun (rg : List CPoint) => bind p2 (fun (k : CPoint) => bind comH (fun (c : CPoint) => bind att2 (fun (s : List U256) => some (attested n (makeIdentity k c rg s)))))))
+
+def idNotIssuer : Option (Except Identity) :=
+  bind con2 (fun (n : Covenant) => bind ring3 (fun (rg : List CPoint) => bind p2 (fun (k : CPoint) => bind comH (fun (c : CPoint) => bind (attestSign rg k0 k c) (fun (s : List U256) => some (attested n (makeIdentity k c rg s)))))))

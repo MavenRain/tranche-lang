@@ -6,11 +6,13 @@ TCC ?= tcc
 CC ?= cc
 CFLAGS = -std=c99 -Wall -Werror -Isrc
 CLANG_FLAGS = -std=c99 -Wall -Wextra -Wswitch-enum -Werror -fsyntax-only -Isrc
-FRONT = src/front/base.c src/front/u256.c src/front/field.c src/front/secp256k1.c src/front/blsag.c src/front/elgamal.c build/elg_table.c src/front/threshold.c src/front/frost.c src/front/lexer.c src/front/parser.c src/front/front.c src/front/eval.c src/front/check.c src/front/fmt.c src/sha256.c
+FRONT = src/front/base.c src/front/u256.c src/front/field.c src/front/secp256k1.c src/front/blsag.c src/front/ringsig.c src/front/claimcom.c src/front/elgamal.c build/elg_table.c src/front/threshold.c src/front/frost.c src/front/lexer.c src/front/parser.c src/front/front.c src/front/eval.c src/front/check.c src/front/fmt.c src/sha256.c
 TARGET = src/front/lower.c src/wasm.c src/js.c src/wgsl.c
 SRC = src/main.c src/front/json.c src/front/jsonin.c src/front/codes.c src/mcp.c $(FRONT) $(TARGET)
 FRONT_TOOL = test/fronttool.c $(filter-out src/front/front.c,$(FRONT)) src/front/json.c
 BLSAG_TOOL = test/blsagtool.c src/front/u256.c src/front/field.c src/front/secp256k1.c src/front/blsag.c src/sha256.c
+RINGSIG_TOOL = test/ringsigtool.c src/front/u256.c src/front/field.c src/front/secp256k1.c src/front/blsag.c src/front/ringsig.c src/sha256.c
+CLAIM_TOOL = test/claimtool.c src/front/u256.c src/front/field.c src/front/secp256k1.c src/front/blsag.c src/front/claimcom.c src/sha256.c
 ELGAMAL_TOOL = test/elgamaltool.c src/front/u256.c src/front/field.c src/front/secp256k1.c src/front/blsag.c src/front/elgamal.c build/elg_table.c src/sha256.c
 THRESHOLD_TOOL = test/thresholdtool.c src/front/u256.c src/front/field.c src/front/secp256k1.c src/front/blsag.c src/front/elgamal.c build/elg_table.c src/front/threshold.c src/sha256.c
 DKG_TOOL = test/dkgtool.c src/front/u256.c src/front/field.c src/front/secp256k1.c src/front/blsag.c src/front/elgamal.c build/elg_table.c src/front/threshold.c src/front/dkg.c src/sha256.c
@@ -33,7 +35,7 @@ HEADERS = $(wildcard src/*.h src/front/*.h)
 
 .PHONY: build check check-clang clean gpu-check
 
-build: build/langc build/fronttool build/blsagtool build/elgamaltool build/thresholdtool build/dkgtool build/sigmatool build/frosttool build/ballottool build/secptool build/shatool build/pathtool build/runtool build/wasmtool build/jstool build/wgsltool build/mcptool
+build: build/langc build/fronttool build/blsagtool build/ringsigtool build/claimtool build/elgamaltool build/thresholdtool build/dkgtool build/sigmatool build/frosttool build/ballottool build/secptool build/shatool build/pathtool build/runtool build/wasmtool build/jstool build/wgsltool build/mcptool
 
 build/domain.c: domain/domain.lang gen/embed.c
 	mkdir -p build
@@ -53,6 +55,14 @@ build/fronttool: $(FRONT_TOOL) $(HEADERS)
 build/blsagtool: $(BLSAG_TOOL) $(HEADERS)
 	mkdir -p build
 	$(TCC) $(CFLAGS) -o build/blsagtool $(BLSAG_TOOL)
+
+build/ringsigtool: $(RINGSIG_TOOL) $(HEADERS)
+	mkdir -p build
+	$(TCC) $(CFLAGS) -o build/ringsigtool $(RINGSIG_TOOL)
+
+build/claimtool: $(CLAIM_TOOL) $(HEADERS)
+	mkdir -p build
+	$(TCC) $(CFLAGS) -o build/claimtool $(CLAIM_TOOL)
 
 build/elgamaltool: $(ELGAMAL_TOOL) $(HEADERS)
 	mkdir -p build
@@ -121,6 +131,8 @@ check-clang: build/domain.c build/elg_table.c
 	$(CC) $(CLANG_FLAGS) $(SRC) build/domain.c
 	$(CC) $(CLANG_FLAGS) $(FRONT_TOOL)
 	$(CC) $(CLANG_FLAGS) $(BLSAG_TOOL)
+	$(CC) $(CLANG_FLAGS) $(RINGSIG_TOOL)
+	$(CC) $(CLANG_FLAGS) $(CLAIM_TOOL)
 	$(CC) $(CLANG_FLAGS) $(ELGAMAL_TOOL)
 	$(CC) $(CLANG_FLAGS) $(THRESHOLD_TOOL)
 	$(CC) $(CLANG_FLAGS) $(DKG_TOOL)
@@ -138,12 +150,14 @@ check-clang: build/domain.c build/elg_table.c
 	$(CC) $(CLANG_FLAGS) test/entrytest.c
 	$(CC) $(CLANG_FLAGS) $(MCP_TOOL)
 
-check: build/langc build/fronttool build/blsagtool build/elgamaltool build/thresholdtool build/dkgtool build/sigmatool build/frosttool build/ballottool build/secptool build/shatool build/pathtool build/runtool build/wasmtool build/jstool build/wgsltool build/mcptool build/jstest build/entrytest check-clang
+check: build/langc build/fronttool build/blsagtool build/ringsigtool build/claimtool build/elgamaltool build/thresholdtool build/dkgtool build/sigmatool build/frosttool build/ballottool build/secptool build/shatool build/pathtool build/runtool build/wasmtool build/jstool build/wgsltool build/mcptool build/jstest build/entrytest check-clang
 	sh test/gate.sh
 	sh test/run.sh
 	sh test/review.sh
 	build/fronttool
 	build/blsagtool
+	build/ringsigtool
+	build/claimtool
 	build/elgamaltool
 	build/thresholdtool
 	build/dkgtool

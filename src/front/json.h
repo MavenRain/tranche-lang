@@ -11,12 +11,13 @@
 void json_string_n(const char *text, size_t len, FILE *out);
 void json_string(const char *text, FILE *out);
 /* Writes the one-line object of `langc check --json` and a newline:
-   `{"diagnostics":[...],"progress":{...},"bounds":[...],"fails":[...]}` in
-   this key order. DIAG gives the one diagnostic when DIAG->set, else the
+   `{"diagnostics":[...],"progress":{...},"bounds":[...],"fails":[...],
+   "tables":[...]}` in this key order. DIAG gives the one diagnostic when DIAG->set, else the
    list is empty; its fix is null, or the edit of diag_fix. PATH is the
-   span file, as given. When DIAG->set, bounds and fails are empty; else
+   span file, as given. When DIAG->set, bounds, fails and tables are empty; else
    BOUNDS[i] is the bound of the entry PROG->funcs[i] (C9c, Q-S3-33), and
-   FAILS holds FAIL_COUNT rows (Q-S3-35). */
+   FAILS holds FAIL_COUNT rows (Q-S3-35), TABLES holds TABLE_COUNT rows (S4 C6,
+   Q-S4-7). */
 /* One def of the `fails` key (C9c, Q-S3-35): the names of the Fail
    constructors in the normal form of DEF, in the constructor order. */
 typedef struct {
@@ -26,6 +27,7 @@ typedef struct {
 } FailRow;
 
 void json_check(FILE *out, const char *path, const Diag *diag, const CheckProgress *progress,
-                const IrProgram *prog, const IrBound *bounds, const FailRow *fails, size_t fail_count);
+                const IrProgram *prog, const IrBound *bounds, const FailRow *fails, size_t fail_count,
+                const TableRow *tables, size_t table_count);
 
 #endif

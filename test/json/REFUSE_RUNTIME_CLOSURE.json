@@ -1,1 +1,1 @@
-{"diagnostics":[{"code":"REFUSE_RUNTIME_CLOSURE","span":null,"message":"bad: a function value must exist at run time (HOST-LIMIT)","fix":null}],"progress":{"parsed":1,"typed":1,"laws_discharged":0,"laws_total":0},"bounds":[],"fails":[]}
+{"diagnostics":[{"code":"REFUSE_RUNTIME_CLOSURE","span":null,"message":"bad: a function value must exist at run time (HOST-LIMIT)","fix":null}],"progress":{"parsed":1,"typed":1,"laws_discharged":0,"laws_total":0},"bounds":[],"fails":[],"tables":[]}

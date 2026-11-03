@@ -6,7 +6,8 @@ Q-S3-34). `langc check` without `--json` does not lower. It writes one
 JSON line on stdout. A tool reads this line in place of `ok` or the text
 diagnostic on stderr. S12 adds it (PLAN row A2, rulings Q-S12-1 to
 Q-S12-12). S3 C9c adds the lowering and the keys `bounds` and `fails`
-(rulings Q-S3-32 to Q-S3-36).
+(rulings Q-S3-32 to Q-S3-36). S4 C6 adds the key `tables` (ruling
+Q-S4-7).
 
 ## Usage
 
@@ -26,7 +27,7 @@ build/langc --kit check --json PROG
 The line is one JSON object and a newline. The keys come in this order:
 
 ```
-{"diagnostics":[DIAG],"progress":{"parsed":P,"typed":T,"laws_discharged":D,"laws_total":L},"bounds":[BOUND],"fails":[FAIL]}
+{"diagnostics":[DIAG],"progress":{"parsed":P,"typed":T,"laws_discharged":D,"laws_total":L},"bounds":[BOUND],"fails":[FAIL],"tables":[TABLE]}
 ```
 
 When `langc` accepts the program, `diagnostics` is empty. Else it holds
@@ -122,6 +123,51 @@ is `[]`. An example (`test/json/kit.fails.json`):
 "fails":[{"def":"pick","values":["full","overflow"]}]
 ```
 
+## Tables
+
+`tables` has one object for each program def whose core is `rTable R`
+(ruling Q-S4-7):
+
+```
+{"def":"NAME","rows":N,"pairs":P}
+```
+
+The check applies these rules to the def, in this order:
+
+1. R must have the type `C -> C -> Option Nat`, with `C = Prod J S`. J
+   and S must be closed sums: each constructor has no field, and the type
+   has no parameter, no index and no path constructor. C can be a def
+   alias (`def C : Type 0 := Prod J S`). If not, the code is
+   `TYPE_MISMATCH`.
+2. `pairs` is the number of pairs (h, k) of points of C, thus
+   (|J| |S|)^2. If `pairs` is more than 1024, the code is
+   `REFUSE_UNBOUNDED`. The check does this before it evaluates R.
+3. The check evaluates R at each pair. h is the outer loop and k is the
+   inner loop. In the points of C, J is the outer loop and S is the inner
+   loop. Each value must be a closed `none` or a closed `some n`. If not,
+   the code is `REFUSE_UNBOUNDED`.
+4. `rows` is the number of `some` values. If `rows` is more than 28, the
+   code is `REFUSE_UNBOUNDED`.
+
+The core of the def is then a static quoted list: one `((h, k), n)` for
+each `some n`, in the loop order. Thus the def has no object in `bounds`
+and no object in `fails`.
+
+When `diagnostics` is not empty, or no def has an `rTable R` core,
+`tables` is `[]`. An example (`test/json/kit.tables.json`). C is
+`Claims = Prod Juris Status`, with 6 points and 36 pairs:
+
+```
+def R : Claims -> Claims -> Option Nat :=
+  fun (h : Claims) (k : Claims) => fold (fold none none (some 1) (first k)) (some 2) (some 3) (first h)
+
+def table : List (Prod (Prod Claims Claims) Nat) := rTable R
+```
+
+```
+"tables":[{"def":"table","rows":28,"pairs":36}]
+```
+
 ## FIXFILE
 
 `build/fronttool fix PROG FIXFILE` applies one fix to PROG and writes the
@@ -151,10 +197,13 @@ as a row:
 
 - `CODE.lang`: a row for the code CODE. `ok.lang` and `kit.lang` are
   accepted rows, and so are the rows `kit.TAG.lang` (`kit.bounds`,
-  `kit.fails`). `langc` refuses each other row, and its first code is
-  CODE.
-- `CODE.TAG.lang`: one more row for CODE. The code is the file name up to
-  the first dot.
+  `kit.fails`, `kit.tables`). `langc` refuses each other row, and its
+  first code is CODE.
+- `CODE.TAG.lang`: one more row for CODE (`REFUSE_UNBOUNDED.rows`,
+  `REFUSE_UNBOUNDED.pairs`, `REFUSE_TARGET_SECRET.closed`,
+  `TYPE_MISMATCH.rtable`). The code is the file name up to the first dot.
+  The row `REFUSE_TARGET_SECRET.closed` is a closed def that reaches
+  `zkKey` (ruling Q-S4-9).
 - `X.json`: the expected line of the row X. `langc check --json` must give
   these bytes and write nothing on stderr.
 - `X.fix`: the FIXFILE of each refused row X. After `fronttool fix`,
@@ -162,7 +211,10 @@ as a row:
 - The rows `kit`, `REFUSE_HISTORY_WRITE`, `REFUSE_MAP`, `REFUSE_PARTIAL`,
   `REFUSE_STATE` and the 5 lowering rows (`REFUSE_LOWER`,
   `REFUSE_RUNTIME_CLOSURE`, `REFUSE_RUNTIME_TREE`, `REFUSE_TARGET_SECRET`
-  and `REFUSE_UNBOUNDED`) run with `--kit`.
+  and `REFUSE_UNBOUNDED`) run with `--kit`. The row
+  `TYPE_MISMATCH.rtable` also runs with `--kit`: without `--kit`, the type
+  Nat gives `REFUSE_KIT`. The other `TYPE_MISMATCH` rows run without
+  `--kit`.
 - Each `REFUSE_` code of `src/front/check.c` and `src/front/lower.c` must
   have a row `CODE.lang` (ruling Q-S3-36).
 - Each row must be `langc fmt` canonical (`build/langc fmt X.lang | cmp -
@@ -180,5 +232,5 @@ To add a row X:
    bounds from `build/langc --kit ir test/json/X.lang`).
 4. For a refused row, write `test/json/X.fix`.
 
-At S3 the gate prints `json rows: 28 passed`, `json refusal codes: 19 of
-19` and `json fixes: 24 passed`.
+At S4 C7 the gate prints `json rows: 33 passed`, `json refusal codes: 19
+of 19` and `json fixes: 28 passed`.

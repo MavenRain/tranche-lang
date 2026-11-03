@@ -21,6 +21,10 @@
 #define PRINT_MAX 65536u
 #define NO_FAMILY UINT32_MAX
 #define NO_DEF UINT32_MAX
+/* The rTable caps (S4 C6, Q-S4-7): the S5 row proof is a 1-of-n OR over the
+   admitted rows, so they fit a ring; the pairs bound the check-time work. */
+#define RTABLE_ROWS_MAX BLSAG_RING_MAX
+#define RTABLE_PAIRS_MAX 1024u
 
 #define FAIL(c, code, ...) diag_fail_at((c)->m->diag, (c)->m->def_span, (code), (c)->m->def, __VA_ARGS__)
 /* FAIL with a fix: replace SPAN by TEXT (S12; no fix when TEXT is NULL). */
@@ -121,6 +125,7 @@ typedef enum {
   RULE_KMAP_GET,
   RULE_KMAP_SET,
   RULE_FIXED, /* S2: a fixed signature over U256, Nat, points and lists */
+  RULE_RTABLE, /* S4 C6: the static table of a claim relation (Q-S4-7) */
   RULE_FIN,
   RULE_FIN_OP,
   RULE_GLUE,
@@ -231,6 +236,10 @@ static const Builtin BUILTINS[] = {
   {"zkDigest", 1, RULE_FIXED, OP_ZK_DIGEST, OP_OPTION, 0, VIS_INTERNAL},
   {"zkSign", 4, RULE_FIXED, OP_ZK_SIGN, OP_OPTION, 0, VIS_INTERNAL},
   {"zkVerify", 4, RULE_FIXED, OP_ZK_VERIFY, OP_OPTION, 0, VIS_INTERNAL},
+  {"claimCom", 3, RULE_FIXED, OP_CLAIM_COM, OP_OPTION, 0, VIS_INTERNAL},
+  {"attestSign", 4, RULE_FIXED, OP_ATTEST_SIGN, OP_OPTION, 0, VIS_INTERNAL},
+  {"attestVerify", 4, RULE_FIXED, OP_ATTEST_VERIFY, OP_OPTION, 0, VIS_INTERNAL},
+  {"rTable", 1, RULE_RTABLE, OP_RTABLE, OP_LIST, 0, VIS_INTERNAL},
   {"schnorrOk", 5, RULE_FIXED, OP_SCHNORR_OK, OP_FLAG, 0, VIS_INTERNAL},
   {"ZkBallot", 1, RULE_TYPE1, OP_ZK_BALLOT, OP_NAT, 0, VIS_INTERNAL},
   {"ZkWitness", 0, RULE_TYPE0, OP_ZK_WITNESS, OP_NAT, 0, VIS_INTERNAL},
@@ -2263,7 +2272,8 @@ static const Core *rule_prim(Call *k, Op arg) {
 
 static uint32_t find_family(const Machine *m, const char *name);
 
-/* The curve ops (S2, R17), the zk ops (S8 B2a) and schnorrOk (S7 B3): fixed signatures over
+/* The curve ops (S2, R17), the zk ops (S8 B2a), the claim and attest ops
+   (S4 C3) and schnorrOk (S7 B3): fixed signatures over
    U256, Nat, a point Prod U256 U256, a ring List of points and a word list
    List U256. The result is the RES shape of the row, or an Option of it
    when the kit row result is OP_OPTION (S3 P4a, Q-S3-7, Q-S3-13). */
@@ -2282,6 +2292,9 @@ static const Core *rule_fixed(Call *k) {
     {OP_ZK_DIGEST, {SHAPE_RING, SHAPE_U256, SHAPE_U256, SHAPE_U256}, SHAPE_U256},
     {OP_ZK_SIGN, {SHAPE_RING, SHAPE_U256, SHAPE_U256, SHAPE_U256}, SHAPE_WORDS},
     {OP_ZK_VERIFY, {SHAPE_RING, SHAPE_U256, SHAPE_U256, SHAPE_WORDS}, SHAPE_FLAG},
+    {OP_CLAIM_COM, {SHAPE_NAT, SHAPE_NAT, SHAPE_U256, SHAPE_U256}, SHAPE_POINT},
+    {OP_ATTEST_SIGN, {SHAPE_RING, SHAPE_U256, SHAPE_POINT, SHAPE_POINT}, SHAPE_WORDS},
+    {OP_ATTEST_VERIFY, {SHAPE_RING, SHAPE_POINT, SHAPE_POINT, SHAPE_WORDS}, SHAPE_FLAG},
     {OP_SCHNORR_OK, {SHAPE_U256, SHAPE_U256, SHAPE_U256, SHAPE_U256, SHAPE_U256}, SHAPE_FLAG},
   };
   Checker *c = k->c;
@@ -2299,6 +2312,122 @@ static const Core *rule_fixed(Call *k) {
   }
   k->type = k->b->result == OP_OPTION ? tyop(c, OP_OPTION, 1, shape[ROWS[row].res], NULL, NULL) : shape[ROWS[row].res];
   return core_op(c, k->b->op, 0, 0, args, k->b->arity);
+}
+
+/* The family index F of T when T is a sum of constructors with no fields
+   (S4 C6): no parameters, no indices, no path constructors and no
+   constructor fields. */
+static int closed_sum(const Machine *m, const Value *t, uint32_t *f) {
+  uint32_t i;
+  if (!val_is(t, OP_FAMILY) || t->inst >= m->family_count)
+    return 0;
+  *f = t->inst;
+  if (m->families[*f].param_count != 0u || m->families[*f].index_count != 0u)
+    return 0;
+  for (i = 0; i < m->families[*f].ctor_count; i++) {
+    const CtorInfo *ctor = &m->ctors[m->families[*f].first_ctor + i];
+    if (ctor->field_count != 0u || ctor->interval_count != 0u)
+      return 0;
+  }
+  return 1;
+}
+
+/* The value I of C = Prod J S in constructor order, J outer: `pair j s`. */
+static const Value *rtable_point(Machine *m, uint32_t fj, uint32_t fs, uint32_t i) {
+  uint32_t s = m->families[fs].ctor_count;
+  return val_make(m, OP_PAIR, 0, 2, val_ctor(m, m->families[fj].first_ctor + i / s, NULL, 0),
+                  val_ctor(m, m->families[fs].first_ctor + i % s, NULL, 0), NULL);
+}
+
+/* Records the rTable of the current def for the `tables` key (S4 C6): a def
+   that the checker checks again keeps one row, the last. */
+static int table_row(Machine *m, uint32_t rows, uint32_t pairs) {
+  const char *def = m->def != NULL ? m->def : "";
+  TableRow *grown;
+  uint32_t i = 0;
+  while (i < m->table_count && strcmp(m->tables[i].def, def) != 0) i++;
+  if (i == m->table_cap) {
+    grown = arena_alloc(m->arena, ((size_t)m->table_cap * 2u + 4u) * sizeof *grown);
+    if (grown == NULL)
+      return 0;
+    if (m->table_count > 0u)
+      memcpy(grown, m->tables, (size_t)m->table_count * sizeof *grown);
+    m->tables = grown;
+    m->table_cap = m->table_cap * 2u + 4u;
+  }
+  m->tables[i].def = def;
+  m->tables[i].rows = rows;
+  m->tables[i].pairs = pairs;
+  m->table_count += i == m->table_count ? 1u : 0u;
+  return 1;
+}
+
+/* rTable R (S4 C6, Q-S4-7): R : C -> C -> Option Nat with C = Prod J S, J
+   and S sums of constructors with no fields. The checker evaluates R at
+   each of the |J|^2 |S|^2 pairs (h, k), h outer, each in constructor order
+   (J outer), and gives the static list of the admitted rows
+   `pair (pair h k) n`, a List (Prod (Prod C C) Nat). More than
+   RTABLE_PAIRS_MAX pairs (before any eval) or RTABLE_ROWS_MAX rows is
+   REFUSE_UNBOUNDED, and so is an R that is not closed: the table is static. */
+static const Core *rule_rtable(Call *k) {
+  Checker *c = k->c;
+  Machine *m = c->m;
+  const Value *type = NULL;
+  const Core *core = infer(c, k->args[0], &type);
+  const Value *dom = type != NULL && type->kind == VAL_PI ? type->dom : NULL;
+  const Value *nat = nat_type(c);
+  const Value *rows[RTABLE_ROWS_MAX + 1u];
+  const Value *fn;
+  const Value *list;
+  uint32_t fj = 0;
+  uint32_t fs = 0;
+  uint64_t n;
+  uint64_t h;
+  uint64_t i;
+  uint32_t count = 0;
+  if (core == NULL)
+    return NULL;
+  if (dom == NULL || !val_is(dom, OP_PROD) || dom->argc != 2u || !closed_sum(m, dom->args[0], &fj) ||
+      !closed_sum(m, dom->args[1], &fs) ||
+      !conv_values(m, c->level, type, val_arrow(m, dom, val_arrow(m, dom, tyop(c, OP_OPTION, 1, nat, NULL, NULL)))))
+    return nul(FAIL(c, "TYPE_MISMATCH",
+                    "rTable needs R : C -> C -> Option Nat with C = Prod J S, J and S sums of constructors with no "
+                    "fields (Q-S4-7), found %s",
+                    show(c, type)));
+  n = (uint64_t)m->families[fj].ctor_count * m->families[fs].ctor_count;
+  if (n > 0xffffffffu || n * n > RTABLE_PAIRS_MAX)
+    return nul(FAIL(c, "REFUSE_UNBOUNDED",
+                    "rTable: C = Prod J S has %llu values, so the pairs |J|^2 |S|^2 are over the cap of %u (Q-S4-7)",
+                    (unsigned long long)n, RTABLE_PAIRS_MAX));
+  fn = here(c, core);
+  if (fn == NULL)
+    return NULL;
+  for (h = 0; h < n; h++) {
+    for (i = 0; i < n; i++) {
+      const Value *x = rtable_point(m, fj, fs, (uint32_t)h);
+      const Value *y = rtable_point(m, fj, fs, (uint32_t)i);
+      const Value *r = apply_value(m, apply_value(m, fn, x), y);
+      int some = val_is(r, OP_SOME) && r->argc == 1u && r->args[0] != NULL && r->args[0]->kind == VAL_NAT;
+      if (r == NULL)
+        return NULL;
+      if (!some && !val_is(r, OP_NONE))
+        return nul(FAIL(c, "REFUSE_UNBOUNDED", "rTable: R is not closed at a pair (h, k): %s; the table must be static (Q-S4-7)",
+                        show(c, r)));
+      if (some && count <= RTABLE_ROWS_MAX)
+        rows[count] = val_make(m, OP_PAIR, 0, 2, val_make(m, OP_PAIR, 0, 2, x, y, NULL), r->args[0], NULL);
+      count += some ? 1u : 0u;
+    }
+  }
+  if (count > RTABLE_ROWS_MAX)
+    return nul(FAIL(c, "REFUSE_UNBOUNDED", "rTable: R admits %u rows, over the cap of %u rows (Q-S4-7)", count,
+                    (unsigned)RTABLE_ROWS_MAX));
+  list = val_make(m, OP_NIL, 0, 0, NULL, NULL, NULL);
+  for (i = count; i > 0; i--)
+    list = val_make(m, OP_CONS, 0, 2, rows[i - 1u], list, NULL);
+  k->type = tyop(c, OP_LIST, 1, tyop(c, OP_PROD, 2, tyop(c, OP_PROD, 2, dom, dom, NULL), nat, NULL), NULL, NULL);
+  if (!table_row(m, count, (uint32_t)(n * n)))
+    return nul(diag_fail(m->diag, "OOM", m->def, "out of memory"));
+  return quote_value(m, c->level, list);
 }
 
 /* zkCast M C m c (S8 B2b): M and C in Type 0, m : M, c : C; a ZkBallot C.
@@ -2613,6 +2742,8 @@ static const Core *rule(Call *k) {
     return kmap_access(k, 1);
   case RULE_FIXED:
     return rule_fixed(k);
+  case RULE_RTABLE:
+    return rule_rtable(k);
   case RULE_ZK_CAST:
     return rule_zk_cast(k);
   case RULE_ZK_PROVE:

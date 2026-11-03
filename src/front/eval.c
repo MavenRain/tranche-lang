@@ -2,9 +2,11 @@
    front/core.h). SHARED by the tcc kits. */
 #include "front/core.h"
 #include "front/blsag.h"
+#include "front/claimcom.h"
 #include "front/elgamal.h"
 #include "front/frost.h"
 #include "front/group.h"
+#include "front/ringsig.h"
 #include "sha256.h"
 
 #include <string.h>
@@ -35,6 +37,8 @@ static const char *const OP_NAMES[] = {
   [OP_KMAP_GET] = "mapGet", [OP_KMAP_SET] = "mapSet",
   [OP_ZK_HP] = "zkHp", [OP_ZK_KEY] = "zkKey", [OP_ZK_DIGEST] = "zkDigest",
   [OP_ZK_SIGN] = "zkSign", [OP_ZK_VERIFY] = "zkVerify", [OP_SCHNORR_OK] = "schnorrOk",
+  [OP_CLAIM_COM] = "claimCom", [OP_ATTEST_SIGN] = "attestSign", [OP_ATTEST_VERIFY] = "attestVerify",
+  [OP_RTABLE] = "rTable",
   [OP_ZK_BALLOT] = "ZkBallot", [OP_ZK_WITNESS] = "ZkWitness", [OP_ZK_CAST] = "zkCast",
   [OP_ZK_PROVE] = "zkProve", [OP_ZK_PROJECT] = "zkProject", [OP_ZK_CHECK] = "zkCheck",
   [OP_NAT_IS_SET] = "natIsSet", [OP_U256_IS_SET] = "u256IsSet", [OP_FLAG_IS_SET] = "flagIsSet",
@@ -66,6 +70,7 @@ static const unsigned char OP_ARITY[] = {
   [OP_EC_ADD] = 2, [OP_EC_MUL] = 2, [OP_ADDR_TO_U256] = 1,
   [OP_PROJ] = 1, [OP_KMAP] = 2, [OP_KMAP_OF] = VARIES, [OP_KMAP_GET] = 3, [OP_KMAP_SET] = 4,
   [OP_ZK_HP] = 1, [OP_ZK_KEY] = 1, [OP_ZK_DIGEST] = 1, [OP_ZK_SIGN] = 4, [OP_ZK_VERIFY] = 4, [OP_SCHNORR_OK] = 5,
+  [OP_CLAIM_COM] = 3, [OP_ATTEST_SIGN] = 4, [OP_ATTEST_VERIFY] = 4, [OP_RTABLE] = 1,
   [OP_ZK_BALLOT] = 1, [OP_ZK_WITNESS] = 0, [OP_ZK_CAST] = 4, [OP_ZK_PROVE] = 1, [OP_ZK_PROJECT] = 2, [OP_ZK_CHECK] = 4,
   [OP_NAT_IS_SET] = 0, [OP_U256_IS_SET] = 0, [OP_FLAG_IS_SET] = 0, [OP_OPT_NAT_IS_SET] = 0,
   [OP_INTERVAL] = 0, [OP_TRANSP] = 3,
@@ -1647,6 +1652,90 @@ static const Value *zk_verify(Machine *m, const Value *const *a, uint32_t n) {
   return internal(m, "an unknown bLSAG verdict");
 }
 
+/* claimCom juris status r (S4 C3, front/claimcom.h): some (juris G1 +
+   status G2 + r H), none when r is 0 mod n. An open argument keeps the call
+   stuck. */
+static const Value *claim_com(Machine *m, const Value *const *a, uint32_t n) {
+  GroupPoint p;
+  U256 x;
+  U256 y;
+  if (a[0]->kind != VAL_NAT || a[1]->kind != VAL_NAT || a[2]->kind != VAL_WORD)
+    return opaque(m, OP_CLAIM_COM, a, n);
+  if (!claimcom(&p, a[0]->nat, a[1]->nat, a[2]->word))
+    return constant(m, OP_NONE);
+  group_to_words(&x, &y, &p);
+  return some_of(m, make(m, VAL_OP, OP_PAIR, 0, 2, word_value(m, &x), word_value(m, &y), NULL));
+}
+
+/* attestSign ring x key com (S4 C3, Q-S4-1 (a)): the list c_0, s_0 to
+   s_(n-1) of the ring signature on (key, com) with no key image
+   (front/ringsig.h). none on each 0 of ringsig_sign: a bad ring, x not in
+   the ring, key or com off the curve. */
+static const Value *attest_sign(Machine *m, const Value *const *a, uint32_t n) {
+  const Value *out = NULL;
+  GroupPoint ring[BLSAG_RING_MAX];
+  GroupPoint key;
+  GroupPoint com;
+  U256 sig[RINGSIG_RING_MAX + 1u];
+  uint32_t count = 0;
+  uint32_t i;
+  if (a[1]->kind != VAL_WORD || !closed_point(a[2]) || !closed_point(a[3]))
+    return opaque(m, OP_ATTEST_SIGN, a, n);
+  if (!zk_ring(m, OP_ATTEST_SIGN, a, n, ring, &count, &out))
+    return out;
+  if (!group_from_words(&key, a[2]->args[0]->word, a[2]->args[1]->word)
+      || !group_from_words(&com, a[3]->args[0]->word, a[3]->args[1]->word)
+      || !ringsig_sign(sig, ring, count, a[1]->word, &key, &com))
+    return constant(m, OP_NONE);
+  out = constant(m, OP_NIL);
+  for (i = count + 1u; i > 0; i--)
+    out = make(m, VAL_OP, OP_CONS, 0, 2, word_value(m, &sig[i - 1u]), out, NULL);
+  return some_of(m, out);
+}
+
+/* attestVerify ring key com sig (S4 C3): some flagYes when the chain
+   closes, some flagNo on a reject or a list of another length than n + 1.
+   A bad ring, key or com off the curve and RINGSIG_NONE give none. An open
+   key, com or signature word keeps the call stuck. */
+static const Value *attest_verify(Machine *m, const Value *const *a, uint32_t n) {
+  const Value *out = NULL;
+  const Value *items[RINGSIG_RING_MAX + 2u];
+  GroupPoint ring[BLSAG_RING_MAX];
+  GroupPoint key;
+  GroupPoint com;
+  U256 sig[RINGSIG_RING_MAX + 1u];
+  uint32_t count = 0;
+  uint32_t len = 0;
+  uint32_t i;
+  int open = !closed_point(a[1]) || !closed_point(a[2]);
+  if (!closed_list(a[3], items, RINGSIG_RING_MAX + 1u, &len))
+    return opaque(m, OP_ATTEST_VERIFY, a, n);
+  for (i = 0; i < len && i < RINGSIG_RING_MAX + 1u; i++) {
+    if (items[i]->kind != VAL_WORD)
+      open = 1;
+  }
+  if (!zk_ring(m, OP_ATTEST_VERIFY, a, n, ring, &count, &out))
+    return open ? opaque(m, OP_ATTEST_VERIFY, a, n) : out;
+  if (open)
+    return opaque(m, OP_ATTEST_VERIFY, a, n);
+  if (!group_from_words(&key, a[1]->args[0]->word, a[1]->args[1]->word)
+      || !group_from_words(&com, a[2]->args[0]->word, a[2]->args[1]->word))
+    return constant(m, OP_NONE);
+  if (len != count + 1u)
+    return some_of(m, flag(m, 0));
+  for (i = 0; i < len; i++)
+    sig[i] = *items[i]->word;
+  switch (ringsig_verify(ring, count, &key, &com, sig)) {
+  case RINGSIG_ACCEPT:
+    return some_of(m, flag(m, 1));
+  case RINGSIG_REJECT:
+    return some_of(m, flag(m, 0));
+  case RINGSIG_NONE:
+    return constant(m, OP_NONE);
+  }
+  return internal(m, "an unknown ring signature verdict");
+}
+
 /* Only the trusted domain Pos family has the Size-indexed position encoding. */
 static int zk_pos_type(const Machine *m, const Value *t) {
   if (!val_is(t, OP_FAMILY) || t->inst >= m->family_count || t->argc != 1u)
@@ -2527,6 +2616,10 @@ static const Value *transp_data(Machine *m, const Value *head, const Value *line
   case OP_ZK_DIGEST:
   case OP_ZK_SIGN:
   case OP_ZK_VERIFY:
+  case OP_CLAIM_COM:
+  case OP_ATTEST_SIGN:
+  case OP_ATTEST_VERIFY:
+  case OP_RTABLE:
   case OP_SCHNORR_OK:
   case OP_ZK_CAST:
   case OP_ZK_PROVE:
@@ -3536,6 +3629,14 @@ static const Value *reduce_op(Machine *m, Op op, uint32_t inst, uint32_t field, 
     return zk_sign(m, a, n);
   case OP_ZK_VERIFY:
     return zk_verify(m, a, n);
+  case OP_CLAIM_COM:
+    return claim_com(m, a, n);
+  case OP_ATTEST_SIGN:
+    return attest_sign(m, a, n);
+  case OP_ATTEST_VERIFY:
+    return attest_verify(m, a, n);
+  case OP_RTABLE: /* S4 C6: the checker gives the static list, so no core has it */
+    return internal(m, "an rTable after the check");
   case OP_SCHNORR_OK:
     return schnorr_ok(m, a, n);
   case OP_ZK_CAST:

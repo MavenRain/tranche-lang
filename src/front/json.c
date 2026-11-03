@@ -62,7 +62,8 @@ static void put_fix(const char *path, const Diag *diag, FILE *out) {
 }
 
 void json_check(FILE *out, const char *path, const Diag *diag, const CheckProgress *progress,
-                const IrProgram *prog, const IrBound *bounds, const FailRow *fails, size_t fail_count) {
+                const IrProgram *prog, const IrBound *bounds, const FailRow *fails, size_t fail_count,
+                const TableRow *tables, size_t table_count) {
   size_t i;
   size_t k;
   fputs("{\"diagnostics\":[", out);
@@ -98,6 +99,12 @@ void json_check(FILE *out, const char *path, const Diag *diag, const CheckProgre
       json_string(fails[i].values[k], out);
     }
     fputs("]}", out);
+  }
+  fputs("],\"tables\":[", out);
+  for (i = 0; !diag->set && i < table_count; i++) {
+    fputs(i == 0 ? "{\"def\":" : ",{\"def\":", out);
+    json_string(tables[i].def, out);
+    fprintf(out, ",\"rows\":%u,\"pairs\":%u}", (unsigned)tables[i].rows, (unsigned)tables[i].pairs);
   }
   fputs("]}\n", out);
 }

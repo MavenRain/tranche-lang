@@ -87,6 +87,13 @@ typedef enum {
   OP_ZK_DIGEST,
   OP_ZK_SIGN,
   OP_ZK_VERIFY,
+  /* Slice S4 C3: the claim commitment and the issuer ring signature in the
+     host (front/claimcom.c, front/ringsig.c). Kit only, `langc eval` only:
+     claimCom, attestSign and attestVerify. */
+  OP_CLAIM_COM,
+  OP_ATTEST_SIGN,
+  OP_ATTEST_VERIFY,
+  OP_RTABLE,     /* rTable R (S4 C6, Q-S4-7): the checker gives the static list, so no core has it */
   OP_SCHNORR_OK,
   OP_ZK_BALLOT,  /* ZkBallot C: the private ballot carrier for choices C (S8 B2b) */
   OP_ZK_WITNESS, /* ZkWitness: the witness carrier; OP_WITNESS is the Sigma projection */
@@ -336,6 +343,14 @@ typedef struct {
 
 /* The checked program and the evaluation state. No global state: every
    function gets this context. */
+/* One rTable of the `check --json` key `tables` (S4 C6, Q-S4-7): the def,
+   the admitted rows and the pairs |J|^2 |S|^2 that the checker evaluated. */
+typedef struct {
+  const char *def;
+  uint32_t rows;
+  uint32_t pairs;
+} TableRow;
+
 typedef struct {
   Arena *arena;
   Diag *diag;
@@ -361,6 +376,10 @@ typedef struct {
   /* Set by the lowering (Q-S8-13): a neutral path at an end keeps the
      path for every endpoint value, so its trap flag reaches the result. */
   int keep_ends;
+  /* Each rTable that the checker admitted, one row for each def (S4 C6). */
+  TableRow *tables;
+  uint32_t table_count;
+  uint32_t table_cap;
 } Machine;
 
 /* One Glue that a true key reduced. OUT is the result, a fresh copy of the

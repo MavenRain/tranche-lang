@@ -1,0 +1,8 @@
+-- REFUSE_UNBOUNDED (S4 C6, Q-S4-7): C = Prod Fail Juris has 36 values, thus
+-- rTable R has 1296 pairs. This is over the pairs cap of 1024, so the check
+-- refuses it before any eval. The fix gives C = Prod Status Status.
+def C : Type 0 := Prod Fail Juris
+
+def R : C -> C -> Option Nat := fun (h : C) (k : C) => some 1
+
+def table : List (Prod (Prod C C) Nat) := rTable R
