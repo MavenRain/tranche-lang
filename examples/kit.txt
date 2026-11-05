@@ -39,3 +39,6 @@ outlog.lang
 fail.lang
 elg.lang
 claims.lang
+units.lang
+trkit.lang
+transfer.lang

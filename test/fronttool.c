@@ -320,7 +320,9 @@ static int dump(const char *file) {
   Diag diag;
   TokenList tokens = {0};
   DeclList decls = {0};
-  arena_init(&arena, (size_t)1 << 24);
+  /* The langc limit (ARENA_LIMIT_BYTES in src/main.c): the tokens of
+     examples/transfer.lang need more than 1 << 24 bytes. */
+  arena_init(&arena, (size_t)1 << 30);
   diag_init(&diag);
   int ok = lex_source(&arena, file, text, len, &tokens, &diag)
     && parse_source(&arena, file, ORIGIN_PROGRAM, &tokens, &decls, &diag);

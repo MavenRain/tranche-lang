@@ -3,6 +3,6 @@
 -- refuses it before any eval. The fix gives C = Prod Status Status.
 def C : Type 0 := Prod Fail Juris
 
-def R : C -> C -> Option Nat := fun (h : C) (k : C) => some 1
+def R : C -> C -> Option Units := fun (h : C) (k : C) => some (unitsOf 1)
 
-def table : List (Prod (Prod C C) Nat) := rTable R
+def table : List (Prod (Prod C C) Units) := rTable R

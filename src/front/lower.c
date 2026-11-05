@@ -931,7 +931,26 @@ static int secret_op(Low *l) {
    marks each def once, so a cycle ends. The ops are the secret_op arm of
    lower_canon. */
 static int secret_kind(Op op) {
-  return op == OP_ZK_KEY || op == OP_ZK_SIGN || op == OP_ZK_WITNESS || op == OP_ZK_CAST || op == OP_ZK_PROVE || op == OP_CLAIM_COM || op == OP_ATTEST_SIGN;
+  return op == OP_ZK_KEY || op == OP_ZK_SIGN || op == OP_ZK_WITNESS || op == OP_ZK_CAST || op == OP_ZK_PROVE || op == OP_CLAIM_COM || op == OP_ATTEST_SIGN ||
+         op == OP_JR_SEND || op == OP_JR_SELECT || op == OP_JR_OPEN || op == OP_TRANSFER_PROVE ||
+         op == OP_ISSUE_PROVE;
+}
+
+/* S5 C3 (O4, Q-S5-4 (a)): the domain families HolderKey and Nonce are the
+   mark. A CORE_OP that is one of them (OP_FAMILY), a constructor of one
+   (OP_CTOR) or a field of one (OP_PROJ) is secret, so a def that names a
+   holder key or a nonce, also only in a binder type, reaches the mark. */
+static int secret_family(const Machine *m, uint32_t f) {
+  return f < m->family_count &&
+         (strcmp(m->families[f].name, "HolderKey") == 0 || strcmp(m->families[f].name, "Nonce") == 0);
+}
+
+static int secret_mark(const Machine *m, const Core *t) {
+  if (t->op == OP_FAMILY)
+    return secret_family(m, t->inst);
+  if ((t->op == OP_CTOR || t->op == OP_PROJ) && t->inst < m->ctor_count)
+    return secret_family(m, m->ctors[t->inst].family);
+  return 0;
 }
 
 static int secret_reach(const Machine *m, unsigned char *seen, const Core *t) {
@@ -966,7 +985,7 @@ static int secret_reach(const Machine *m, unsigned char *seen, const Core *t) {
   case CORE_OP:
     break;
   }
-  if (secret_kind(t->op))
+  if (secret_kind(t->op) || secret_mark(m, t))
     return 1;
   for (i = 0; i < t->argc; i++) {
     if (secret_reach(m, seen, t->args[i]))
@@ -1112,6 +1131,13 @@ static int lower_canon(Low *l, Buf *b, const Value *v, Operand *out) {
   case OP_CLAIM_COM:
   case OP_ATTEST_SIGN:
   case OP_ATTEST_VERIFY:
+  case OP_JR_SEND:
+  case OP_JR_SELECT:
+  case OP_JR_OPEN:
+  case OP_TRANSFER_PROVE:
+  case OP_TRANSFER_VERIFY:
+  case OP_ISSUE_PROVE:
+  case OP_ISSUE_VERIFY:
   case OP_RTABLE:
   case OP_ZK_BALLOT:
   case OP_ZK_WITNESS:
@@ -2231,6 +2257,11 @@ static int lower_stuck(Low *l, Buf *b, const Value *v, Operand *out) {
   case OP_ZK_PROVE:
   case OP_CLAIM_COM:
   case OP_ATTEST_SIGN:
+  case OP_JR_SEND:
+  case OP_JR_SELECT:
+  case OP_JR_OPEN:
+  case OP_TRANSFER_PROVE:
+  case OP_ISSUE_PROVE:
     return secret_op(l);
   case OP_ZK_HP:
   case OP_ZK_DIGEST:
@@ -2239,6 +2270,8 @@ static int lower_stuck(Low *l, Buf *b, const Value *v, Operand *out) {
   case OP_ZK_PROJECT:
   case OP_ZK_CHECK:
   case OP_ATTEST_VERIFY:
+  case OP_TRANSFER_VERIFY:
+  case OP_ISSUE_VERIFY:
     return refuse(l, "a host proof check (zk)");
   case OP_RTABLE: /* S4 C6: the checker gives the static list, so no core has it */
     return internal(l, "an rTable after the check");

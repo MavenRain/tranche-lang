@@ -2,16 +2,16 @@
 -- claims. A claim is a jurisdiction and a status (Claims = Prod Juris
 -- Status in domain/domain.lang). R h k admits a transfer from h to k only
 -- when k has the jurisdiction of h and k is accredited. The result is the
--- tier of that jurisdiction (1, 2 or 3). rTable R has 6 rows over 36
+-- tier of that jurisdiction (1, 2 or 3 Units). rTable R has 6 rows over 36
 -- pairs. The holder of the claim (jurisB, accredited) commits to it
 -- (claimCom), signs an attestation in a ring of 2 keys (attestSign) and
 -- binds it to a covenant in an identity (attested). The closed defs k0,
 -- k1 and k2 reach zkKey, so the lowering refuses them (Q-S4-9 (a)): the
 -- file checks and evaluates, and ir refuses REFUSE_TARGET_SECRET at k0.
-def R : Claims -> Claims -> Option Nat :=
-  fun (h : Claims) (k : Claims) => fold (fold (fold none (some 1) (claimStatus k)) none none (claimJuris k)) (fold none (fold none (some 2) (claimStatus k)) none (claimJuris k)) (fold none none (fold none (some 3) (claimStatus k)) (claimJuris k)) (claimJuris h)
+def R : Claims -> Claims -> Option Units :=
+  fun (h : Claims) (k : Claims) => fold (fold (fold none (some (unitsOf 1)) (claimStatus k)) none none (claimJuris k)) (fold none (fold none (some (unitsOf 2)) (claimStatus k)) none (claimJuris k)) (fold none none (fold none (some (unitsOf 3)) (claimStatus k)) (claimJuris k)) (claimJuris h)
 
-def table : List (Prod (Prod Claims Claims) Nat) := rTable R
+def table : List (Prod (Prod Claims Claims) Units) := rTable R
 
 def g : Prod U256 U256 :=
   pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u
@@ -40,7 +40,7 @@ def attOk : Option Flag :=
   bind ring2 (fun (rg : List (Prod U256 U256)) => bind p2 (fun (k : Prod U256 U256) => bind com (fun (c : Prod U256 U256) => bind att (fun (s : List U256) => attestVerify rg k c s))))
 
 def con2 : Option Covenant :=
-  bind p0 (fun (a : CPoint) => bind p1 (fun (b : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmCons CPoint a (fmCons CPoint b (fmUnit CPoint))))))
+  bind p0 (fun (a : CPoint) => bind p1 (fun (b : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmCons CPoint a (fmCons CPoint b (fmUnit CPoint))) (pair 0u 0u) table)))
 
 def holder : Option (Except Identity) :=
   bind con2 (fun (n : Covenant) => bind ring2 (fun (rg : List CPoint) => bind p2 (fun (k : CPoint) => bind com (fun (c : CPoint) => bind att (fun (s : List U256) => some (attested n (makeIdentity k c rg s)))))))

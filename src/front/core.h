@@ -93,6 +93,14 @@ typedef enum {
   OP_CLAIM_COM,
   OP_ATTEST_SIGN,
   OP_ATTEST_VERIFY,
+  /* S5 C9 (B3-1): the transfer kit words, kit only, langc eval only. */
+  OP_JR_SEND,
+  OP_JR_SELECT,
+  OP_JR_OPEN,
+  OP_TRANSFER_PROVE,
+  OP_TRANSFER_VERIFY,
+  OP_ISSUE_PROVE,
+  OP_ISSUE_VERIFY,
   OP_RTABLE,     /* rTable R (S4 C6, Q-S4-7): the checker gives the static list, so no core has it */
   OP_SCHNORR_OK,
   OP_ZK_BALLOT,  /* ZkBallot C: the private ballot carrier for choices C (S8 B2b) */

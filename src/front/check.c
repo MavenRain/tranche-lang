@@ -139,7 +139,8 @@ typedef enum {
   RULE_NONZERO,    /* S3: NonZero A */
   RULE_NONZERO_OF, /* nonZero x */
   RULE_NONZERO_VALUE, /* nonZeroValue x */
-  RULE_DIV         /* natDiv, natMod, mulDiv: a NonZero divisor */
+  RULE_DIV,        /* natDiv, natMod, mulDiv: a NonZero divisor */
+  RULE_TRANCHE     /* the S5 transfer words (C9, B3-1) */
 } Rule;
 
 typedef struct {
@@ -239,6 +240,13 @@ static const Builtin BUILTINS[] = {
   {"claimCom", 3, RULE_FIXED, OP_CLAIM_COM, OP_OPTION, 0, VIS_INTERNAL},
   {"attestSign", 4, RULE_FIXED, OP_ATTEST_SIGN, OP_OPTION, 0, VIS_INTERNAL},
   {"attestVerify", 4, RULE_FIXED, OP_ATTEST_VERIFY, OP_OPTION, 0, VIS_INTERNAL},
+  {"jrSend", 5, RULE_TRANCHE, OP_JR_SEND, OP_OPTION, 0, VIS_INTERNAL},
+  {"jrSelect", 5, RULE_TRANCHE, OP_JR_SELECT, OP_OPTION, 0, VIS_INTERNAL},
+  {"jrOpen", 5, RULE_TRANCHE, OP_JR_OPEN, OP_OPTION, 0, VIS_INTERNAL},
+  {"transferProve", 4, RULE_TRANCHE, OP_TRANSFER_PROVE, OP_OPTION, 0, VIS_INTERNAL},
+  {"transferVerify", 3, RULE_TRANCHE, OP_TRANSFER_VERIFY, OP_OPTION, 0, VIS_INTERNAL},
+  {"issueProve", 5, RULE_TRANCHE, OP_ISSUE_PROVE, OP_OPTION, 0, VIS_INTERNAL},
+  {"issueVerify", 5, RULE_TRANCHE, OP_ISSUE_VERIFY, OP_OPTION, 0, VIS_INTERNAL},
   {"rTable", 1, RULE_RTABLE, OP_RTABLE, OP_LIST, 0, VIS_INTERNAL},
   {"schnorrOk", 5, RULE_FIXED, OP_SCHNORR_OK, OP_FLAG, 0, VIS_INTERNAL},
   {"ZkBallot", 1, RULE_TYPE1, OP_ZK_BALLOT, OP_NAT, 0, VIS_INTERNAL},
@@ -2332,6 +2340,13 @@ static int closed_sum(const Machine *m, const Value *t, uint32_t *f) {
   return 1;
 }
 
+/* 1 when T is a class type C = Prod J S, J and S sums of constructors with
+   no fields (rTable, S4 C6; the transfer words, S5 C9). */
+static int class_type(const Machine *m, const Value *t, uint32_t *fj, uint32_t *fs) {
+  return t != NULL && val_is(t, OP_PROD) && t->argc == 2u && closed_sum(m, t->args[0], fj) &&
+         closed_sum(m, t->args[1], fs);
+}
+
 /* The value I of C = Prod J S in constructor order, J outer: `pair j s`. */
 static const Value *rtable_point(Machine *m, uint32_t fj, uint32_t fs, uint32_t i) {
   uint32_t s = m->families[fs].ctor_count;
@@ -2362,11 +2377,12 @@ static int table_row(Machine *m, uint32_t rows, uint32_t pairs) {
   return 1;
 }
 
-/* rTable R (S4 C6, Q-S4-7): R : C -> C -> Option Nat with C = Prod J S, J
-   and S sums of constructors with no fields. The checker evaluates R at
+/* rTable R (S4 C6, Q-S4-7): R : C -> C -> Option Units with C = Prod J S,
+   J and S sums of constructors with no fields (S5 Q-S5-5 (b): the cap is
+   the domain family Units, S4 had Nat). The checker evaluates R at
    each of the |J|^2 |S|^2 pairs (h, k), h outer, each in constructor order
    (J outer), and gives the static list of the admitted rows
-   `pair (pair h k) n`, a List (Prod (Prod C C) Nat). More than
+   `pair (pair h k) u`, a List (Prod (Prod C C) Units). More than
    RTABLE_PAIRS_MAX pairs (before any eval) or RTABLE_ROWS_MAX rows is
    REFUSE_UNBOUNDED, and so is an R that is not closed: the table is static. */
 static const Core *rule_rtable(Call *k) {
@@ -2375,7 +2391,8 @@ static const Core *rule_rtable(Call *k) {
   const Value *type = NULL;
   const Core *core = infer(c, k->args[0], &type);
   const Value *dom = type != NULL && type->kind == VAL_PI ? type->dom : NULL;
-  const Value *nat = nat_type(c);
+  uint32_t uf = find_family(m, "Units");
+  const Value *units = uf < m->family_count ? val_make(m, OP_FAMILY, uf, 0, NULL, NULL, NULL) : NULL;
   const Value *rows[RTABLE_ROWS_MAX + 1u];
   const Value *fn;
   const Value *list;
@@ -2387,12 +2404,11 @@ static const Core *rule_rtable(Call *k) {
   uint32_t count = 0;
   if (core == NULL)
     return NULL;
-  if (dom == NULL || !val_is(dom, OP_PROD) || dom->argc != 2u || !closed_sum(m, dom->args[0], &fj) ||
-      !closed_sum(m, dom->args[1], &fs) ||
-      !conv_values(m, c->level, type, val_arrow(m, dom, val_arrow(m, dom, tyop(c, OP_OPTION, 1, nat, NULL, NULL)))))
+  if (units == NULL || !class_type(m, dom, &fj, &fs) ||
+      !conv_values(m, c->level, type, val_arrow(m, dom, val_arrow(m, dom, tyop(c, OP_OPTION, 1, units, NULL, NULL)))))
     return nul(FAIL(c, "TYPE_MISMATCH",
-                    "rTable needs R : C -> C -> Option Nat with C = Prod J S, J and S sums of constructors with no "
-                    "fields (Q-S4-7), found %s",
+                    "rTable needs R : C -> C -> Option Units with C = Prod J S, J and S sums of constructors with no "
+                    "fields (Q-S4-7, Q-S5-5), found %s",
                     show(c, type)));
   n = (uint64_t)m->families[fj].ctor_count * m->families[fs].ctor_count;
   if (n > 0xffffffffu || n * n > RTABLE_PAIRS_MAX)
@@ -2407,7 +2423,9 @@ static const Core *rule_rtable(Call *k) {
       const Value *x = rtable_point(m, fj, fs, (uint32_t)h);
       const Value *y = rtable_point(m, fj, fs, (uint32_t)i);
       const Value *r = apply_value(m, apply_value(m, fn, x), y);
-      int some = val_is(r, OP_SOME) && r->argc == 1u && r->args[0] != NULL && r->args[0]->kind == VAL_NAT;
+      const Value *u = val_is(r, OP_SOME) && r->argc == 1u ? r->args[0] : NULL;
+      int some = val_is(u, OP_CTOR) && u->inst == m->families[uf].first_ctor && u->argc == 1u && u->args[0] != NULL &&
+                 u->args[0]->kind == VAL_NAT;
       if (r == NULL)
         return NULL;
       if (!some && !val_is(r, OP_NONE))
@@ -2424,10 +2442,88 @@ static const Core *rule_rtable(Call *k) {
   list = val_make(m, OP_NIL, 0, 0, NULL, NULL, NULL);
   for (i = count; i > 0; i--)
     list = val_make(m, OP_CONS, 0, 2, rows[i - 1u], list, NULL);
-  k->type = tyop(c, OP_LIST, 1, tyop(c, OP_PROD, 2, tyop(c, OP_PROD, 2, dom, dom, NULL), nat, NULL), NULL, NULL);
+  k->type = tyop(c, OP_LIST, 1, tyop(c, OP_PROD, 2, tyop(c, OP_PROD, 2, dom, dom, NULL), units, NULL), NULL, NULL);
   if (!table_row(m, count, (uint32_t)(n * n)))
     return nul(diag_fail(m->diag, "OOM", m->def, "out of memory"));
   return quote_value(m, c->level, list);
+}
+
+/* The S5 transfer kit words (C9, B3-1, B3-3, B3-7): fixed signatures over
+   a point, a word list, Units, a pair of two Ct, a statement ST (5 points,
+   then 4 Ct), a proof (4 word lists) and the rTable rows. The rows are
+   inferred: the type must be List (Prod (Prod C C) Units) with C = Prod J S
+   (class_type), and CLASS is that C. The result is an Option of a word list,
+   or of Flag for a verifier. */
+static const Core *rule_tranche(Call *k) {
+  enum { T_POINT, T_WORDS, T_UNITS, T_CT2, T_ST, T_PROOF, T_ROWS, T_CLASS };
+  static const struct {
+    Op op;
+    unsigned char arg[5];
+    int verify;
+  } ROWS[] = {
+    {OP_JR_SEND, {T_ROWS, T_CLASS, T_ST, T_UNITS, T_WORDS}, 0},
+    {OP_JR_SELECT, {T_ROWS, T_CLASS, T_ST, T_WORDS, T_WORDS}, 0},
+    {OP_JR_OPEN, {T_ROWS, T_ST, T_WORDS, T_WORDS, T_WORDS}, 0},
+    {OP_TRANSFER_PROVE, {T_ST, T_UNITS, T_UNITS, T_WORDS}, 0},
+    {OP_TRANSFER_VERIFY, {T_ROWS, T_ST, T_PROOF}, 1},
+    {OP_ISSUE_PROVE, {T_POINT, T_POINT, T_CT2, T_UNITS, T_WORDS}, 0},
+    {OP_ISSUE_VERIFY, {T_POINT, T_POINT, T_CT2, T_UNITS, T_WORDS}, 1},
+  };
+  Checker *c = k->c;
+  Machine *m = c->m;
+  uint32_t uf = find_family(m, "Units");
+  uint32_t cf = find_family(m, "Ct");
+  const Value *u = tyop(c, OP_U256, 0, NULL, NULL, NULL);
+  const Value *point = tyop(c, OP_PROD, 2, u, u, NULL);
+  const Value *words = tyop(c, OP_LIST, 1, u, NULL, NULL);
+  const Value *units = uf < m->family_count ? val_make(m, OP_FAMILY, uf, 0, NULL, NULL, NULL) : NULL;
+  const Value *ct = cf < m->family_count ? val_make(m, OP_FAMILY, cf, 0, NULL, NULL, NULL) : NULL;
+  const Value *shape[8] = {NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+  const Core *args[5] = {NULL, NULL, NULL, NULL, NULL};
+  const Value *type = NULL;
+  size_t row = 0;
+  uint32_t fj = 0;
+  uint32_t fs = 0;
+  uint32_t i;
+  while (row < sizeof ROWS / sizeof ROWS[0] && ROWS[row].op != k->b->op) row++;
+  if (row == sizeof ROWS / sizeof ROWS[0] || k->b->arity > 5u)
+    return NULL;
+  if (units == NULL || ct == NULL)
+    return nul(FAIL(c, "TYPE_MISMATCH", "%s needs the domain families Units and Ct (S5 C9)", k->b->name));
+  shape[T_POINT] = point;
+  shape[T_WORDS] = words;
+  shape[T_UNITS] = units;
+  shape[T_CT2] = tyop(c, OP_PROD, 2, ct, ct, NULL);
+  shape[T_ST] = ct;
+  for (i = 0; i < 3u; i++) shape[T_ST] = tyop(c, OP_PROD, 2, ct, shape[T_ST], NULL);
+  for (i = 0; i < 5u; i++) shape[T_ST] = tyop(c, OP_PROD, 2, point, shape[T_ST], NULL);
+  shape[T_PROOF] = tyop(c, OP_PROD, 2, words, tyop(c, OP_PROD, 2, words, tyop(c, OP_PROD, 2, words, words, NULL), NULL), NULL);
+  for (i = 0; i < k->b->arity; i++) {
+    if (ROWS[row].arg[i] == T_ROWS) {
+      const Value *e;
+      args[i] = infer(c, k->args[i], &type);
+      if (args[i] == NULL)
+        return NULL;
+      e = type != NULL && val_is(type, OP_LIST) && type->argc == 1u ? type->args[0] : NULL;
+      shape[T_CLASS] = e != NULL && val_is(e, OP_PROD) && e->argc == 2u && val_is(e->args[0], OP_PROD) && e->args[0]->argc == 2u
+                           ? e->args[0]->args[0]
+                           : NULL;
+      if (!class_type(m, shape[T_CLASS], &fj, &fs) ||
+          !conv_values(m, c->level, type,
+                       tyop(c, OP_LIST, 1, tyop(c, OP_PROD, 2, tyop(c, OP_PROD, 2, shape[T_CLASS], shape[T_CLASS], NULL), units, NULL),
+                            NULL, NULL)))
+        return nul(FAIL(c, "TYPE_MISMATCH",
+                        "%s needs the rTable rows List (Prod (Prod C C) Units) with C = Prod J S, J and S sums of "
+                        "constructors with no fields (S5 C9), found %s",
+                        k->b->name, show(c, type)));
+    } else {
+      args[i] = check(c, k->args[i], shape[ROWS[row].arg[i]]);
+      if (args[i] == NULL)
+        return NULL;
+    }
+  }
+  k->type = tyop(c, OP_OPTION, 1, ROWS[row].verify ? flag_type(c) : words, NULL, NULL);
+  return core_op(c, k->b->op, 0, 0, args, k->b->arity);
 }
 
 /* zkCast M C m c (S8 B2b): M and C in Type 0, m : M, c : C; a ZkBallot C.
@@ -2744,6 +2840,8 @@ static const Core *rule(Call *k) {
     return rule_fixed(k);
   case RULE_RTABLE:
     return rule_rtable(k);
+  case RULE_TRANCHE:
+    return rule_tranche(k);
   case RULE_ZK_CAST:
     return rule_zk_cast(k);
   case RULE_ZK_PROVE:

@@ -1,7 +1,7 @@
 -- kit.tables (S4 C6, Q-S4-7): rTable R over C = Claims = Prod Juris Status
 -- has 6 points and 36 pairs. R admits 28 rows. This is the rows cap, so a
 -- `>=` test on the cap refuses this row.
-def R : Claims -> Claims -> Option Nat :=
-  fun (h : Claims) (k : Claims) => fold (fold none none (some 1) (first k)) (some 2) (some 3) (first h)
+def R : Claims -> Claims -> Option Units :=
+  fun (h : Claims) (k : Claims) => fold (fold none none (some (unitsOf 1)) (first k)) (some (unitsOf 2)) (some (unitsOf 3)) (first h)
 
-def table : List (Prod (Prod Claims Claims) Nat) := rTable R
+def table : List (Prod (Prod Claims Claims) Units) := rTable R

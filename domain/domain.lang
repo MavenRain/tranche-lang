@@ -339,12 +339,39 @@ def keyAppend : Polity -> Point := fun (s : Polity) => second (second (second (s
 def polityIsSet : isSet Polity :=
   isSetProd (FreeMon Point) (Prod Nat (Prod Nat (Prod Nat (Prod Point Point)))) (fmIsSet Point) (isSetProd Nat (Prod Nat (Prod Nat (Prod Point Point))) natIsSet (isSetProd Nat (Prod Nat (Prod Point Point)) natIsSet (isSetProd Nat (Prod Point Point) natIsSet (isSetProd Point Point u256IsSet u256IsSet))))
 
+-- The claims (S4, Q-S4-8 (a)). Juris and Status are closed sums with no
+-- fields, so the kit word rTable can evaluate R on each pair of claims at
+-- check time. A Claims is the pair (juris, status) of PLAN 4.1, in the
+-- Identity record form. Only this file can declare a family (rule R1).
+family Juris := jurisA | jurisB | jurisC
+
+family Status := retail | accredited
+
+def Claims : Type 0 := Prod Juris Status
+
+def makeClaims : Juris -> Status -> Claims := fun (j : Juris) (s : Status) => pair j s
+
+def claimJuris : Claims -> Juris := fun (c : Claims) => first c
+
+def claimStatus : Claims -> Status := fun (c : Claims) => second c
+
+-- A Units is an amount below 2^32 (S5 C1, toUnits below). A Rows is the
+-- table of a transfer rule, rTable R (S5 C10, Q-S5-10 (a)): each row is
+-- a pair of claims and the cap of that pair. A Covenant holds its Rows:
+-- makeCovenant takes them as its 4th argument, and covRows gives them.
+family Units := unitsOf (unitsVal : Nat)
+
+def Rows : Type 0 := List (Prod (Prod Claims Claims) Units)
+
 -- The covenant and the identity (S4, Q-S4-1 (a), Q-S4-4 (a), Q-S4-5 (a)
 -- and Q-S4-6: the name Covenant is the social-choice one of the
 -- kernel). A CPoint is a full secp256k1 point (x, y), the form of the kit
 -- words claimCom, attestSign and attestVerify. A Covenant holds the Polity
--- in force and the issuers, the keys that can sign an attestation. S6 and
--- S7 add fields the same way, so the Polity projections stay. An Identity
+-- in force, the issuers (the keys that can sign an attestation) and
+-- keyOpenC, the full point of the Polity key keyOpen (S5, Q-S5-6 (a): a
+-- Point is the x coordinate only); makeCovenant does not test that the x
+-- of keyOpenC is keyOpen. S6 and S7 add fields the same way, so the
+-- Polity projections stay. An Identity
 -- holds the holder key, the claim commitment, the issuer ring and the ring
 -- signature. ringIn tests that each key of the ring is an issuer.
 -- attestVerify gives none on a ring over 28 keys (maxIssuers), so the fold
@@ -355,14 +382,18 @@ def CPoint : Type 0 := Prod U256 U256
 
 def cpointIsSet : isSet CPoint := isSetProd U256 U256 u256IsSet u256IsSet
 
-def Covenant : Type 0 := Prod Polity (FreeMon CPoint)
+def Covenant : Type 0 := Prod Polity (Prod (FreeMon CPoint) (Prod CPoint Rows))
 
-def makeCovenant : Polity -> FreeMon CPoint -> Covenant :=
-  fun (s : Polity) (m : FreeMon CPoint) => pair s m
+def makeCovenant : Polity -> FreeMon CPoint -> CPoint -> Rows -> Covenant :=
+  fun (s : Polity) (m : FreeMon CPoint) (k : CPoint) (t : Rows) => pair s (pair m (pair k t))
 
 def polity : Covenant -> Polity := fun (n : Covenant) => first n
 
-def issuers : Covenant -> FreeMon CPoint := fun (n : Covenant) => second n
+def issuers : Covenant -> FreeMon CPoint := fun (n : Covenant) => first (second n)
+
+def keyOpenC : Covenant -> CPoint := fun (n : Covenant) => first (second (second n))
+
+def covRows : Covenant -> Rows := fun (n : Covenant) => second (second (second n))
 
 def Identity : Type 0 := Prod CPoint (Prod CPoint (Prod (List CPoint) (List U256)))
 
@@ -389,21 +420,206 @@ def ringIn : Covenant -> List CPoint -> Flag :=
 def attested : Covenant -> Identity -> Except Identity :=
   fun (n : Covenant) (d : Identity) => option (exFail Identity badAttest) (fun (v : Flag) => flagIf v (flagIf (ringIn n (idRing d)) (exEta Identity d) (exFail Identity badAttest)) (exFail Identity badAttest)) (attestVerify (idRing d) (idKey d) (idCom d) (idAtt d))
 
--- The claims (S4, Q-S4-8 (a)). Juris and Status are closed sums with no
--- fields, so the kit word rTable can evaluate R on each pair of claims at
--- check time. A Claims is the pair (juris, status) of PLAN 4.1, in the
--- Identity record form. Only this file can declare a family (rule R1).
-family Juris := jurisA | jurisB | jurisC
+-- The units and the ciphertexts (S5 C1, C2 and C4, Q-S5-4 (a) and Q-S5-5
+-- (b)). A Units is an amount below 2^32, the range of elgLog. toUnits
+-- gives the failure outOfRange at 2^32 and above. A Ct is an exponential
+-- ElGamal ciphertext (c1, c2) = (r G, m G + r P) on secp256k1. The kit
+-- words use (0, 0) for the point at infinity, so ctZero is the ciphertext
+-- of 0 with r = 0. ctAdd and ctSub add and subtract the amounts under one
+-- key, and ctScale multiplies the amount by k. A HolderKey and a Nonce are
+-- secret: the lowering refuses a def that reaches one (C3). ctEnc encrypts
+-- m to the key P with the nonce r. decryptIn computes c2 - k c1 = m G and
+-- gives m when m is below 2^32, else the failure outOfRange (N7, L17).
+def toUnits : Nat -> Except Units :=
+  fun (n : Nat) => option (exEta Units (unitsOf n)) (fun (d : Nat) => exFail Units outOfRange) (natSub n 4294967296)
 
-family Status := retail | accredited
+family Ct := ctOf (ctC1 : CPoint) (ctC2 : CPoint)
 
-def Claims : Type 0 := Prod Juris Status
+def ctZero : Ct := ctOf (pair 0u 0u) (pair 0u 0u)
 
-def makeClaims : Juris -> Status -> Claims := fun (j : Juris) (s : Status) => pair j s
+def ctAdd : Ct -> Ct -> Option Ct :=
+  fun (a : Ct) (b : Ct) => bind (ecAdd (ctC1 a) (ctC1 b)) (fun (x : CPoint) => bind (ecAdd (ctC2 a) (ctC2 b)) (fun (y : CPoint) => some (ctOf x y)))
 
-def claimJuris : Claims -> Juris := fun (c : Claims) => first c
+def ctScale : Ct -> U256 -> Option Ct :=
+  fun (a : Ct) (k : U256) => bind (ecMul (ctC1 a) k) (fun (x : CPoint) => bind (ecMul (ctC2 a) k) (fun (y : CPoint) => some (ctOf x y)))
 
-def claimStatus : Claims -> Status := fun (c : Claims) => second c
+def ctNeg : Ct -> Option Ct :=
+  fun (a : Ct) => ctScale a 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140u
+
+def ctSub : Ct -> Ct -> Option Ct :=
+  fun (a : Ct) (b : Ct) => bind (ctNeg b) (fun (c : Ct) => ctAdd a c)
+
+family HolderKey := holderKey (holderKeyOf : U256)
+
+family Nonce := nonceOf (nonceVal : U256)
+
+def ctEnc : CPoint -> Nat -> Nonce -> Option Ct :=
+  fun (p : CPoint) (m : Nat) (r : Nonce) => bind (ecMul (pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u) (nonceVal r)) (fun (x : CPoint) => bind (ecMul (pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u) (toU256 m)) (fun (mg : CPoint) => bind (ecMul p (nonceVal r)) (fun (rp : CPoint) => bind (ecAdd mg rp) (fun (y : CPoint) => some (ctOf x y)))))
+
+def decryptIn : HolderKey -> Ct -> Except Units :=
+  fun (k : HolderKey) (c : Ct) => option (exFail Units outOfRange) toUnits (bind (ecMul (ctC1 c) (holderKeyOf k)) (fun (s : CPoint) => bind (ecMul s 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140u) (fun (t : CPoint) => bind (ecAdd (ctC2 c) t) (fun (u : CPoint) => elgLog u))))
+
+-- The holdings and the measure (S5 C5 and C6, PLAN 4.2, Q-S5-7 (b)). A
+-- Holding is (id, own, pub, bal): the identity of the holder and three
+-- ciphertexts. makeHolding sets bal to ctZero. A Measure is the bag of the
+-- holdings, the supply and the distributed amount. makeMeasure gives the
+-- failure full when the bag has more than maxHolders (1024) holdings, and
+-- the failure overflow when len gives none.
+def Holding : Type 0 := Prod Identity (Prod Ct (Prod Ct Ct))
+
+def makeHolding : Identity -> Ct -> Ct -> Holding :=
+  fun (d : Identity) (o : Ct) (p : Ct) => pair d (pair o (pair p ctZero))
+
+def holdId : Holding -> Identity := fun (h : Holding) => first h
+
+def holdOwn : Holding -> Ct := fun (h : Holding) => first (second h)
+
+def holdPub : Holding -> Ct := fun (h : Holding) => first (second (second h))
+
+def holdBal : Holding -> Ct := fun (h : Holding) => second (second (second h))
+
+def Measure : Type 0 := Prod (FreeMon Holding) (Prod Units U256)
+
+def maxHolders : Nat := 1024
+
+def makeMeasure : FreeMon Holding -> Units -> U256 -> Except Measure :=
+  fun (m : FreeMon Holding) (u : Units) (w : U256) => option (exFail Measure overflow) (fun (c : Nat) => option (exEta Measure (pair m (pair u w))) (fun (d : Nat) => exFail Measure full) (bind (natSub c maxHolders) (fun (e : Nat) => natSub e 1))) (len Holding m)
+
+def holders : Measure -> FreeMon Holding := fun (s : Measure) => first s
+
+def supply : Measure -> Units := fun (s : Measure) => first (second s)
+
+def distributed : Measure -> U256 := fun (s : Measure) => second (second s)
+
+-- holderAt s p (Q-S5-9 (a)) is the bag of the holdings of s whose key is
+-- p, by cpointEq of idKey. The bag is empty when no holding has the key.
+-- FreeMon Holding is a set (fmIsSet), so fmChain can fold into it.
+def holderAt : Measure -> CPoint -> FreeMon Holding :=
+  fun (s : Measure) (p : CPoint) => fmChain Holding (FreeMon Holding) (fmIsSet Holding) (fun (b : FreeMon Holding) (h : Holding) => flagIf (cpointEq (idKey (holdId h)) p) (fmCons Holding h b) b) (fmUnit Holding) (holders s)
+
+-- The transfer (S5 C10, PLAN 4.2, B3-10 and B3-26 to B3-28). exBind is
+-- the bind of Except. A TrSt is the statement of transferVerify: key h,
+-- key k, keyOpenC, com h, com k, q under each of the 3 keys, and own h.
+-- trDigest is the hash chain over the 26 words of a TrSt from the tag
+-- "tranche-transfer". trProofDigest is the hash chain over the 4 lists of
+-- a TransferProof from 0. A Transfer is (from, to, q, proof, rx, z), and
+-- (rx, z) is a Schnorr signature of the x of key from on the two digests.
+-- trOwn gives own h, or badProof when from holds nothing (the statement
+-- has no own h). trBag subtracts q from own and pub of from and adds q to
+-- own and pub of to. bal does not change, and a transfer to self keeps
+-- each amount. A ct op none gives outOfRange (the decryptIn form). trEnd
+-- adds a holding for a new to. transfer checks in this order: attested
+-- from and to (badAttest), own h (badProof), the signature (badSig), the
+-- room for a new to (full), transferVerify on the rows of the covenant
+-- (badProof), then the update.
+def exBind : (A : Type 0) -> (B : Type 0) -> Except A -> (A -> Except B) -> Except B :=
+  fun (A : Type 0) (B : Type 0) (e : Except A) (k : A -> Except B) => elim (fun (u : Except A) => Except B) (fun (a : A) => k a) (fun (f : Fail) => exFail B f) e
+
+def TrSt : Type 0 :=
+  Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod Ct (Prod Ct (Prod Ct Ct)))))))
+
+def cpWords : U256 -> CPoint -> U256 :=
+  fun (a : U256) (p : CPoint) => hash (hash a (first p)) (second p)
+
+def ctWords : U256 -> Ct -> U256 := fun (a : U256) (c : Ct) => cpWords (cpWords a (ctC1 c)) (ctC2 c)
+
+def tagTransfer : Digest := 0x7472616e6368652d7472616e73666572u
+
+def trDigest : TrSt -> U256 :=
+  fun (s : TrSt) => ctWords (ctWords (ctWords (ctWords (cpWords (cpWords (cpWords (cpWords (cpWords tagTransfer (first s)) (first (second s))) (first (second (second s)))) (first (second (second (second s))))) (first (second (second (second (second s)))))) (first (second (second (second (second (second s))))))) (first (second (second (second (second (second (second s)))))))) (first (second (second (second (second (second (second (second s))))))))) (second (second (second (second (second (second (second (second s))))))))
+
+def TransferProof : Type 0 := Prod (List U256) (Prod (List U256) (Prod (List U256) (List U256)))
+
+def wordsDigest : U256 -> List U256 -> U256 :=
+  fun (a : U256) (l : List U256) => fold (fun (w : U256) (b : U256) => hash b w) a l
+
+def trProofDigest : TransferProof -> U256 :=
+  fun (p : TransferProof) => wordsDigest (wordsDigest (wordsDigest (wordsDigest 0u (first p)) (first (second p))) (first (second (second p)))) (second (second (second p)))
+
+def Transfer : Type 0 :=
+  Prod Identity (Prod Identity (Prod (Prod Ct (Prod Ct Ct)) (Prod TransferProof (Prod U256 U256))))
+
+def makeTransfer : Identity -> Identity -> Prod Ct (Prod Ct Ct) -> TransferProof -> U256 -> U256 -> Transfer :=
+  fun (f : Identity) (k : Identity) (q : Prod Ct (Prod Ct Ct)) (p : TransferProof) (rx : U256) (z : U256) => pair f (pair k (pair q (pair p (pair rx z))))
+
+def trFrom : Transfer -> Identity := fun (t : Transfer) => first t
+
+def trTo : Transfer -> Identity := fun (t : Transfer) => first (second t)
+
+def trQ : Transfer -> Prod Ct (Prod Ct Ct) := fun (t : Transfer) => first (second (second t))
+
+def trProof : Transfer -> TransferProof := fun (t : Transfer) => first (second (second (second t)))
+
+def trRx : Transfer -> U256 := fun (t : Transfer) => first (second (second (second (second t))))
+
+def trZ : Transfer -> U256 := fun (t : Transfer) => second (second (second (second (second t))))
+
+def trSt : Covenant -> Transfer -> Ct -> TrSt :=
+  fun (n : Covenant) (t : Transfer) (o : Ct) => pair (idKey (trFrom t)) (pair (idKey (trTo t)) (pair (keyOpenC n) (pair (idCom (trFrom t)) (pair (idCom (trTo t)) (pair (first (trQ t)) (pair (first (second (trQ t))) (pair (second (second (trQ t))) o)))))))
+
+def trOwnOf : Prod Flag (Prod CPoint CPoint) -> Except Ct :=
+  fun (r : Prod Flag (Prod CPoint CPoint)) => flagIf (first r) (exEta Ct (ctOf (first (second r)) (second (second r)))) (exFail Ct badProof)
+
+def trOwn : Measure -> CPoint -> Except Ct :=
+  fun (s : Measure) (p : CPoint) => trOwnOf (fmChain Holding (Prod Flag (Prod CPoint CPoint)) (isSetProd Flag (Prod CPoint CPoint) flagIsSet (isSetProd CPoint CPoint cpointIsSet cpointIsSet)) (fun (b : Prod Flag (Prod CPoint CPoint)) (h : Holding) => flagIf (cpointEq (idKey (holdId h)) p) (pair flagYes (pair (ctC1 (holdOwn h)) (ctC2 (holdOwn h)))) b) (pair flagNo (pair (pair 0u 0u) (pair 0u 0u))) (holders s))
+
+def ctMove : Flag -> Flag -> Ct -> Ct -> Ct -> Option Ct :=
+  fun (fo : Flag) (fi : Flag) (c : Ct) (a : Ct) (b : Ct) => bind (flagIf fo (ctSub c a) (some c)) (fun (d : Ct) => flagIf fi (ctAdd d b) (some d))
+
+def trPut : Flag -> Flag -> Prod Ct (Prod Ct Ct) -> Holding -> Prod Flag (FreeMon Holding) -> Prod Flag (FreeMon Holding) :=
+  fun (fo : Flag) (fi : Flag) (q : Prod Ct (Prod Ct Ct)) (h : Holding) (b : Prod Flag (FreeMon Holding)) => option (pair flagNo (second b)) (fun (o : Ct) => option (pair flagNo (second b)) (fun (u : Ct) => pair (first b) (fmCons Holding (pair (holdId h) (pair o (pair u (holdBal h)))) (second b))) (ctMove fo fi (holdPub h) (second (second q)) (second (second q)))) (ctMove fo fi (holdOwn h) (first q) (first (second q)))
+
+def trBag : CPoint -> CPoint -> Prod Ct (Prod Ct Ct) -> FreeMon Holding -> Prod Flag (FreeMon Holding) :=
+  fun (kf : CPoint) (kt : CPoint) (q : Prod Ct (Prod Ct Ct)) (m : FreeMon Holding) => fmRun Holding (Prod Flag (FreeMon Holding)) (isSetProd Flag (FreeMon Holding) flagIsSet (fmIsSet Holding)) (fun (h : Holding) => trPut (cpointEq (idKey (holdId h)) kf) (cpointEq (idKey (holdId h)) kt) q h) (pair flagYes (fmUnit Holding)) m
+
+def trNew : Measure -> CPoint -> Flag :=
+  fun (s : Measure) (p : CPoint) => option flagNo (fun (n : Nat) => option flagYes (fun (e : Nat) => flagNo) (natSub n 1)) (len Holding (holderAt s p))
+
+def trRoom : Measure -> CPoint -> Flag :=
+  fun (s : Measure) (p : CPoint) => flagIf (trNew s p) (option flagYes (fun (c : Nat) => option flagYes (fun (d : Nat) => flagNo) (natSub c maxHolders)) (len Holding (holders s))) flagYes
+
+def trEnd : Measure -> Identity -> Prod Ct (Prod Ct Ct) -> Prod Flag (FreeMon Holding) -> Except Measure :=
+  fun (s : Measure) (k : Identity) (q : Prod Ct (Prod Ct Ct)) (b : Prod Flag (FreeMon Holding)) => flagIf (first b) (makeMeasure (flagIf (trNew s (idKey k)) (fmMul Holding (second b) (fmEta Holding (makeHolding k (first (second q)) (second (second q))))) (second b)) (supply s) (distributed s)) (exFail Measure outOfRange)
+
+def trCheck : Covenant -> Measure -> Transfer -> TrSt -> Except Measure :=
+  fun (n : Covenant) (s : Measure) (t : Transfer) (st : TrSt) => flagIf (schnorrOk (first (idKey (trFrom t))) (trRx t) (trZ t) (trDigest st) (trProofDigest (trProof t))) (flagIf (trRoom s (idKey (trTo t))) (option (exFail Measure badProof) (fun (v : Flag) => flagIf v (trEnd s (trTo t) (trQ t) (trBag (idKey (trFrom t)) (idKey (trTo t)) (trQ t) (holders s))) (exFail Measure badProof)) (transferVerify (covRows n) st (trProof t))) (exFail Measure full)) (exFail Measure badSig)
+
+def transfer : Covenant -> Measure -> Transfer -> Except Measure :=
+  fun (n : Covenant) (s : Measure) (t : Transfer) => exBind Identity Measure (attested n (trFrom t)) (fun (f : Identity) => exBind Identity Measure (attested n (trTo t)) (fun (k : Identity) => exBind Ct Measure (trOwn s (idKey f)) (fun (o : Ct) => trCheck n s t (trSt n t o))))
+
+-- The issue check (S5 C11, B3-12, B3-36, Q-S5-8 (a), O6). An Issue is
+-- (to, m, cts, proof): the new units go to the holder to, m is the public
+-- amount, cts is (the pub Ct under keyOpenC, the own Ct under key to) in
+-- the issueVerify order, and proof is the sig_rand proof. issueBy a n s i
+-- checks a i (noQuorum), attested to (badAttest), issueVerify (none or
+-- flagNo: badProof), supply + m (overflow at 2^32) and trRoom (full).
+-- Then trPut adds the own Ct to holdOwn and the pub Ct to holdPub of the
+-- holding of to, or trEnd makes a new holding (a ct op none: outOfRange).
+-- issueBy a n has the ruled type of issue, and S6 binds a to Gov.
+def Issue : Type 0 := Prod Identity (Prod Units (Prod (Prod Ct Ct) (List U256)))
+
+def makeIssue : Identity -> Units -> Prod Ct Ct -> List U256 -> Issue :=
+  fun (d : Identity) (m : Units) (c : Prod Ct Ct) (p : List U256) => pair d (pair m (pair c p))
+
+def issTo : Issue -> Identity := fun (i : Issue) => first i
+
+def issM : Issue -> Units := fun (i : Issue) => first (second i)
+
+def issCts : Issue -> Prod Ct Ct := fun (i : Issue) => first (second (second i))
+
+def issProof : Issue -> List U256 := fun (i : Issue) => second (second (second i))
+
+def issQ : Prod Ct Ct -> Prod Ct (Prod Ct Ct) :=
+  fun (c : Prod Ct Ct) => pair (second c) (pair (second c) (first c))
+
+def issSum : Units -> Units -> Except Units :=
+  fun (a : Units) (b : Units) => option (exFail Units overflow) (fun (c : Nat) => option (exEta Units (unitsOf c)) (fun (d : Nat) => exFail Units overflow) (natSub c 4294967296)) (natAdd (unitsVal a) (unitsVal b))
+
+def issBag : CPoint -> Prod Ct Ct -> FreeMon Holding -> Prod Flag (FreeMon Holding) :=
+  fun (k : CPoint) (c : Prod Ct Ct) (m : FreeMon Holding) => fmRun Holding (Prod Flag (FreeMon Holding)) (isSetProd Flag (FreeMon Holding) flagIsSet (fmIsSet Holding)) (fun (h : Holding) => trPut flagNo (cpointEq (idKey (holdId h)) k) (issQ c) h) (pair flagYes (fmUnit Holding)) m
+
+def issueBy : (Issue -> Flag) -> Covenant -> Measure -> Issue -> Except Measure :=
+  fun (a : Issue -> Flag) (n : Covenant) (s : Measure) (i : Issue) => flagIf (a i) (exBind Identity Measure (attested n (issTo i)) (fun (k : Identity) => option (exFail Measure badProof) (fun (v : Flag) => flagIf v (exBind Units Measure (issSum (supply s) (issM i)) (fun (u : Units) => flagIf (trRoom s (idKey k)) (trEnd (pair (holders s) (pair u (distributed s))) k (issQ (issCts i)) (issBag (idKey k) (issCts i) (holders s))) (exFail Measure full))) (exFail Measure badProof)) (issueVerify (keyOpenC n) (idKey k) (issCts i) (issM i) (issProof i)))) (exFail Measure noQuorum)
 
 -- The append check (S7, Q-S7-1, Q-S7-2 and Q-S7-6 (a)). An Auth is a
 -- threshold Schnorr signature (R.x, z) of the keyAppend committee on the

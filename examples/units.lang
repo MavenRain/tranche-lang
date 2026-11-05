@@ -1,0 +1,91 @@
+-- units (S5 C1 to C6, L17): the units of a measure and the holder words
+-- (domain/domain.lang). A balance is an ElGamal ciphertext of a unit count
+-- under the key of its holder. decryptIn gives the count back when it is
+-- below 2^32, else outOfRange. The holder key and the nonce are secret (O4,
+-- Q-S5-4). The defs that name them have no entry type, thus they are eval
+-- only and the lowering does not reach them. The refused row is
+-- test/ir/secret-holder.lang.
+def gpt : Prod U256 U256 :=
+  pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u
+
+-- The ciphertext of m under the key 7u G, with the nonce r.
+def enc : Nat -> Nat -> Option Ct :=
+  fun (m : Nat) (r : Nat) => bind (ecMul gpt 7u) (fun (p : CPoint) => ctEnc p m (nonceOf (toU256 r)))
+
+-- decryptIn with the key 7u. If there is no ciphertext, the result is
+-- overflow.
+def dec : Option Ct -> Except Units :=
+  fun (o : Option Ct) => option (exFail Units overflow) (fun (c : Ct) => decryptIn (holderKey 7u) c) o
+
+-- C1: toUnits is ok below 2^32, else outOfRange.
+def tuZero : Except Units := toUnits 0
+
+def tuMax : Except Units := toUnits 4294967295
+
+def tuOver : Except Units := toUnits 4294967296
+
+-- C2: the ciphertext operations, by the decrypted values.
+def ctSum : Except Units :=
+  dec (bind (enc 3 15) (fun (a : Ct) => bind (enc 4 16) (fun (b : Ct) => ctAdd a b)))
+
+def ctDiff : Except Units :=
+  dec (bind (enc 7 15) (fun (a : Ct) => bind (enc 3 16) (fun (b : Ct) => ctSub a b)))
+
+def ctTimes : Except Units := dec (bind (enc 3 15) (fun (a : Ct) => ctScale a 5u))
+
+def ctNone : Except Units := decryptIn (holderKey 7u) ctZero
+
+-- C4, L17: decryptIn of ctEnc m is m below 2^32, else outOfRange (2^32
+-- and 2^40 - 1).
+def l17Zero : Except Units := dec (enc 0 11)
+
+def l17One : Except Units := dec (enc 1 12)
+
+def l17Max : Except Units := dec (enc 4294967295 13)
+
+def l17Over : Except Units := dec (enc 4294967296 14)
+
+def l17Big : Except Units := dec (enc 1099511627775 17)
+
+-- C5: a holding of the identity idt. holdOwn and holdPub give the two
+-- ciphertexts of makeHolding, and makeHolding sets the balance to ctZero.
+def idt : Identity := makeIdentity gpt gpt nil nil
+
+def hd : Holding := makeHolding idt ctZero ctZero
+
+def hdKey : Flag := cpointEq (idKey (holdId hd)) gpt
+
+def hdOwn : Except Units :=
+  dec (bind (enc 5 21) (fun (o : Ct) => bind (enc 6 22) (fun (p : Ct) => some (holdOwn (makeHolding idt o p)))))
+
+def hdPub : Except Units :=
+  dec (bind (enc 5 21) (fun (o : Ct) => bind (enc 6 22) (fun (p : Ct) => some (holdPub (makeHolding idt o p)))))
+
+def hdBal : Except Units :=
+  dec (bind (enc 5 21) (fun (o : Ct) => bind (enc 6 22) (fun (p : Ct) => some (holdBal (makeHolding idt o p)))))
+
+-- C6: a measure has at most maxHolders holdings, and holderAt gives the
+-- holdings of a key.
+def two : FreeMon Holding := fmCons Holding hd (fmEta Holding hd)
+
+def ms : Measure := pair two (pair (unitsOf 100) 0u)
+
+def atKey : Option Nat := len Holding (holderAt ms gpt)
+
+def atNone : Option Nat := len Holding (holderAt ms (pair 0u 0u))
+
+def dbl : FreeMon Holding -> FreeMon Holding := fun (b : FreeMon Holding) => fmMul Holding b b
+
+def b1024 : FreeMon Holding :=
+  dbl (dbl (dbl (dbl (dbl (dbl (dbl (dbl (dbl (dbl (fmEta Holding hd))))))))))
+
+def n1024 : Option Nat := len Holding b1024
+
+-- The supply of a measure, or the Fail of makeMeasure. makeMeasure gives
+-- full for maxHolders + 1 holdings.
+def mSup : Except Measure -> Except Units :=
+  fun (e : Except Measure) => elim (fun (x : Except Measure) => Except Units) (fun (a : Measure) => toUnits (unitsVal (supply a))) (fun (f : Fail) => exFail Units f) e
+
+def mOkU : Except Units := mSup (makeMeasure b1024 (unitsOf 100) 0u)
+
+def mFull : Except Units := mSup (makeMeasure (fmCons Holding hd b1024) (unitsOf 100) 0u)

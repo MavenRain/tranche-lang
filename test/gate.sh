@@ -190,7 +190,10 @@ build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-key.lang
 build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-sign.lang
 build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-claim.lang
 build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-attest.lang
+build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-holder.lang
 build_refused --kit REFUSE_LOWER test/ir/attest-verify.lang
+build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-jrsend.lang
+build_refused --kit REFUSE_LOWER test/ir/transfer-verify.lang
 # S10: the WGSL module refuses the secret ops too.
 build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-key.lang --wgsl
 build_refused "" REFUSE_KIT test/ir/comb.lang
@@ -255,7 +258,7 @@ for f in examples/*.lang; do
     "1:langc: REFUSE_LOWER: "*"(HOST-LIMIT)"*) host_limits=$((host_limits + 1)); continue ;;
     "1:langc: REFUSE_TARGET_SECRET: "*)
       case $f in
-        examples/zk.lang | examples/claims.lang | examples/zkcast.lang) secrets=$((secrets + 1)); continue ;;
+        examples/zk.lang | examples/claims.lang | examples/zkcast.lang | examples/trkit.lang | examples/transfer.lang) secrets=$((secrets + 1)); continue ;;
       esac
       echo "FAIL ir $f: exit $status: $(head -n 1 "$tmp/ir.err")"; fail=$((fail + 1)); continue ;;
     0: | "0:langc: note: "*"(O24)") ;;
@@ -737,7 +740,7 @@ echo "fmt check: $checks passed"
 # kit, else it exits 1 and the first code is CODE. The rows kit,
 # REFUSE_HISTORY_WRITE, REFUSE_MAP, REFUSE_PARTIAL, REFUSE_STATE and the 5
 # lowering codes run with --kit, and so does the row TYPE_MISMATCH.rtable
-# (rTable needs Nat, a kit item). Each REFUSE_ code of src/front/check.c and
+# (its literal 1 is a kit Nat). Each REFUSE_ code of src/front/check.c and
 # src/front/lower.c has a row (Q-S3-36). Each row other than ok and kit
 # has test/json/CODE.fix: `fronttool fix` applies it, and `langc check --json`
 # of the result exits 0 or gives a first code other than CODE.

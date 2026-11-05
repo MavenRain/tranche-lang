@@ -134,7 +134,8 @@ is `[]`. An example (`test/json/kit.fails.json`):
 
 The check applies these rules to the def, in this order:
 
-1. R must have the type `C -> C -> Option Nat`, with `C = Prod J S`. J
+1. R must have the type `C -> C -> Option Units`, with `C = Prod J S`
+   (Units is the domain family of the cap, ruling Q-S5-5 (b)). J
    and S must be closed sums: each constructor has no field, and the type
    has no parameter, no index and no path constructor. C can be a def
    alias (`def C : Type 0 := Prod J S`). If not, the code is
@@ -144,13 +145,13 @@ The check applies these rules to the def, in this order:
    `REFUSE_UNBOUNDED`. The check does this before it evaluates R.
 3. The check evaluates R at each pair. h is the outer loop and k is the
    inner loop. In the points of C, J is the outer loop and S is the inner
-   loop. Each value must be a closed `none` or a closed `some n`. If not,
+   loop. Each value must be a closed `none` or a closed `some (unitsOf n)`. If not,
    the code is `REFUSE_UNBOUNDED`.
 4. `rows` is the number of `some` values. If `rows` is more than 28, the
    code is `REFUSE_UNBOUNDED`.
 
-The core of the def is then a static quoted list: one `((h, k), n)` for
-each `some n`, in the loop order. Thus the def has no object in `bounds`
+The core of the def is then a static quoted list: one `((h, k), u)` for
+each `some u`, in the loop order. Thus the def has no object in `bounds`
 and no object in `fails`.
 
 When `diagnostics` is not empty, or no def has an `rTable R` core,
@@ -158,10 +159,10 @@ When `diagnostics` is not empty, or no def has an `rTable R` core,
 `Claims = Prod Juris Status`, with 6 points and 36 pairs:
 
 ```
-def R : Claims -> Claims -> Option Nat :=
-  fun (h : Claims) (k : Claims) => fold (fold none none (some 1) (first k)) (some 2) (some 3) (first h)
+def R : Claims -> Claims -> Option Units :=
+  fun (h : Claims) (k : Claims) => fold (fold none none (some (unitsOf 1)) (first k)) (some (unitsOf 2)) (some (unitsOf 3)) (first h)
 
-def table : List (Prod (Prod Claims Claims) Nat) := rTable R
+def table : List (Prod (Prod Claims Claims) Units) := rTable R
 ```
 
 ```
@@ -201,9 +202,11 @@ as a row:
   first code is CODE.
 - `CODE.TAG.lang`: one more row for CODE (`REFUSE_UNBOUNDED.rows`,
   `REFUSE_UNBOUNDED.pairs`, `REFUSE_TARGET_SECRET.closed`,
-  `TYPE_MISMATCH.rtable`). The code is the file name up to the first dot.
-  The row `REFUSE_TARGET_SECRET.closed` is a closed def that reaches
-  `zkKey` (ruling Q-S4-9).
+  `REFUSE_TARGET_SECRET.holder`, `TYPE_MISMATCH.rtable`). The code is the
+  file name up to the first dot. The row `REFUSE_TARGET_SECRET.closed` is
+  a closed def that reaches `zkKey` (ruling Q-S4-9). The row
+  `REFUSE_TARGET_SECRET.holder` is a closed def that names the holder key
+  mark `holderKey` (ruling Q-S5-4).
 - `X.json`: the expected line of the row X. `langc check --json` must give
   these bytes and write nothing on stderr.
 - `X.fix`: the FIXFILE of each refused row X. After `fronttool fix`,
@@ -212,8 +215,8 @@ as a row:
   `REFUSE_STATE` and the 5 lowering rows (`REFUSE_LOWER`,
   `REFUSE_RUNTIME_CLOSURE`, `REFUSE_RUNTIME_TREE`, `REFUSE_TARGET_SECRET`
   and `REFUSE_UNBOUNDED`) run with `--kit`. The row
-  `TYPE_MISMATCH.rtable` also runs with `--kit`: without `--kit`, the type
-  Nat gives `REFUSE_KIT`. The other `TYPE_MISMATCH` rows run without
+  `TYPE_MISMATCH.rtable` also runs with `--kit`: without `--kit`, the Nat
+  literal of `unitsOf 1` gives `REFUSE_KIT`. The other `TYPE_MISMATCH` rows run without
   `--kit`.
 - Each `REFUSE_` code of `src/front/check.c` and `src/front/lower.c` must
   have a row `CODE.lang` (ruling Q-S3-36).

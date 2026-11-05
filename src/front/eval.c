@@ -7,6 +7,9 @@
 #include "front/frost.h"
 #include "front/group.h"
 #include "front/ringsig.h"
+#include "front/sigma.h"
+#include "front/threshold.h"
+#include "front/trwire.h"
 #include "sha256.h"
 
 #include <string.h>
@@ -38,6 +41,9 @@ static const char *const OP_NAMES[] = {
   [OP_ZK_HP] = "zkHp", [OP_ZK_KEY] = "zkKey", [OP_ZK_DIGEST] = "zkDigest",
   [OP_ZK_SIGN] = "zkSign", [OP_ZK_VERIFY] = "zkVerify", [OP_SCHNORR_OK] = "schnorrOk",
   [OP_CLAIM_COM] = "claimCom", [OP_ATTEST_SIGN] = "attestSign", [OP_ATTEST_VERIFY] = "attestVerify",
+  [OP_JR_SEND] = "jrSend", [OP_JR_SELECT] = "jrSelect", [OP_JR_OPEN] = "jrOpen",
+  [OP_TRANSFER_PROVE] = "transferProve", [OP_TRANSFER_VERIFY] = "transferVerify",
+  [OP_ISSUE_PROVE] = "issueProve", [OP_ISSUE_VERIFY] = "issueVerify",
   [OP_RTABLE] = "rTable",
   [OP_ZK_BALLOT] = "ZkBallot", [OP_ZK_WITNESS] = "ZkWitness", [OP_ZK_CAST] = "zkCast",
   [OP_ZK_PROVE] = "zkProve", [OP_ZK_PROJECT] = "zkProject", [OP_ZK_CHECK] = "zkCheck",
@@ -71,6 +77,8 @@ static const unsigned char OP_ARITY[] = {
   [OP_PROJ] = 1, [OP_KMAP] = 2, [OP_KMAP_OF] = VARIES, [OP_KMAP_GET] = 3, [OP_KMAP_SET] = 4,
   [OP_ZK_HP] = 1, [OP_ZK_KEY] = 1, [OP_ZK_DIGEST] = 1, [OP_ZK_SIGN] = 4, [OP_ZK_VERIFY] = 4, [OP_SCHNORR_OK] = 5,
   [OP_CLAIM_COM] = 3, [OP_ATTEST_SIGN] = 4, [OP_ATTEST_VERIFY] = 4, [OP_RTABLE] = 1,
+  [OP_JR_SEND] = 5, [OP_JR_SELECT] = 5, [OP_JR_OPEN] = 5, [OP_TRANSFER_PROVE] = 4, [OP_TRANSFER_VERIFY] = 3,
+  [OP_ISSUE_PROVE] = 5, [OP_ISSUE_VERIFY] = 5,
   [OP_ZK_BALLOT] = 1, [OP_ZK_WITNESS] = 0, [OP_ZK_CAST] = 4, [OP_ZK_PROVE] = 1, [OP_ZK_PROJECT] = 2, [OP_ZK_CHECK] = 4,
   [OP_NAT_IS_SET] = 0, [OP_U256_IS_SET] = 0, [OP_FLAG_IS_SET] = 0, [OP_OPT_NAT_IS_SET] = 0,
   [OP_INTERVAL] = 0, [OP_TRANSP] = 3,
@@ -1736,6 +1744,450 @@ static const Value *attest_verify(Machine *m, const Value *const *a, uint32_t n)
   return internal(m, "an unknown ring signature verdict");
 }
 
+/* The S5 transfer kit words (C9, B3-1 to B3-9, Q-S5-5 (b)): jrSend,
+   jrSelect, jrOpen, transferProve, transferVerify, issueProve and
+   issueVerify run front/jointr.h, front/transfer.h and front/sigma.h in the
+   host. A message and a proof go in and out as a word list (front/trwire.h,
+   B3-2). An open argument keeps the call stuck (opaque). A bad table, a
+   point off the curve, a list of a wrong length and a host refusal give
+   none. */
+
+#define TK_ISSUE_TAG 0x74726973737565ull /* the ASCII bytes of "trissue" (B3-19) */
+
+/* 1 when V is a closed Units value `units n`, a closed Ct `ctOf c1 c2`, a
+   closed pair of two Ct, or a class `pair j s` of two constructors. */
+static int tk_units(const Value *v) {
+  return val_is(v, OP_CTOR) && v->argc == 1u && v->args[0] != NULL && v->args[0]->kind == VAL_NAT;
+}
+
+static int tk_ct(const Value *v) {
+  return val_is(v, OP_CTOR) && v->argc == 2u && closed_point(v->args[0]) && closed_point(v->args[1]);
+}
+
+static int tk_ct2(const Value *v) {
+  return val_is(v, OP_PAIR) && tk_ct(v->args[0]) && tk_ct(v->args[1]);
+}
+
+static int tk_class(const Value *v) {
+  return val_is(v, OP_PAIR) && val_is(v->args[0], OP_CTOR) && val_is(v->args[1], OP_CTOR);
+}
+
+/* 1 when V is a closed list of words, or of rTable rows `pair (pair h k) u`. */
+static int tk_words(const Value *v) {
+  while (val_is(v, OP_CONS)) {
+    if (v->args[0]->kind != VAL_WORD)
+      return 0;
+    v = v->args[1];
+  }
+  return val_is(v, OP_NIL);
+}
+
+static int tk_rows(const Value *v) {
+  while (val_is(v, OP_CONS)) {
+    const Value *row = v->args[0];
+    if (!val_is(row, OP_PAIR) || !val_is(row->args[0], OP_PAIR) || !tk_class(row->args[0]->args[0]) ||
+        !tk_class(row->args[0]->args[1]) || !tk_units(row->args[1]))
+      return 0;
+    v = v->args[1];
+  }
+  return val_is(v, OP_NIL);
+}
+
+/* The N parts of the right-nested pair V into PART. */
+static int tk_parts(const Value **part, const Value *v, uint32_t n) {
+  uint32_t i;
+  for (i = 0; i + 1u < n; i++) {
+    if (!val_is(v, OP_PAIR))
+      return 0;
+    part[i] = v->args[0];
+    v = v->args[1];
+  }
+  part[n - 1u] = v;
+  return 1;
+}
+
+/* The 9 parts of a closed statement ST (B3-3): key h, key k, keyOpenC, com
+   h and com k (points), then q h, q k, q o and own h (Ct). */
+static int tk_st(const Value **part, const Value *v) {
+  uint32_t i;
+  if (!tk_parts(part, v, 9u))
+    return 0;
+  for (i = 0; i < 9u; i++) {
+    if (i < 5u ? !closed_point(part[i]) : !tk_ct(part[i]))
+      return 0;
+  }
+  return 1;
+}
+
+/* The 4 parts of a closed proof (B3-7): (1) to (3), M1, M2 and M3. */
+static int tk_proof(const Value **part, const Value *v) {
+  uint32_t i;
+  if (!tk_parts(part, v, 4u))
+    return 0;
+  for (i = 0; i < 4u; i++) {
+    if (!tk_words(part[i]))
+      return 0;
+  }
+  return 1;
+}
+
+/* Copies the closed word list V to OUT: 1 when it has LEN words. */
+static int tk_get(U256 *out, const Value *v, uint32_t len) {
+  uint32_t i = 0;
+  while (val_is(v, OP_CONS) && i < len) {
+    out[i] = *v->args[0]->word;
+    i++;
+    v = v->args[1];
+  }
+  return i == len && val_is(v, OP_NIL);
+}
+
+/* An arena buffer of LEN words: a message is too large for the stack (b3 r2). */
+static U256 *tk_buf(Machine *m, uint32_t len) {
+  return arena_alloc(m->arena, ((size_t)len + 1u) * sizeof(U256));
+}
+
+/* some of the list of the LEN words W. */
+static const Value *tk_list(Machine *m, const U256 *w, uint32_t len) {
+  const Value *out = constant(m, OP_NIL);
+  uint32_t i;
+  for (i = len; i > 0; i--)
+    out = make(m, VAL_OP, OP_CONS, 0, 2, word_value(m, &w[i - 1u]), out, NULL);
+  return some_of(m, out);
+}
+
+static int tk_point(GroupPoint *p, const Value *v) {
+  return group_from_words(p, v->args[0]->word, v->args[1]->word);
+}
+
+static int tk_cipher(ElgCipher *e, const Value *v) {
+  return tk_point(&e->c1, v->args[0]) && tk_point(&e->c2, v->args[1]);
+}
+
+/* The host statements of the parts PART of ST (B3-3, B3-15): both take the
+   same ctx (trw_ctx). 0 when a point is off the curve. */
+static int tk_statement(JrStatement *js, TrStatement *ts, const Value *const *part) {
+  memset(js, 0, sizeof *js);
+  memset(ts, 0, sizeof *ts);
+  if (!tk_point(&ts->key_h, part[0]) || !tk_point(&ts->key_k, part[1]) || !tk_point(&ts->key_o, part[2]) ||
+      !tk_point(&js->com_h, part[3]) || !tk_point(&js->com_k, part[4]) || !tk_cipher(&ts->q_h, part[5]) ||
+      !tk_cipher(&ts->q_k, part[6]) || !tk_cipher(&ts->q_o, part[7]) || !tk_cipher(&ts->own_h, part[8]))
+    return 0;
+  trw_ctx(&ts->ctx, &ts->key_h, &ts->key_k, &ts->q_h, &ts->q_k, &ts->q_o);
+  js->key_h = ts->key_h;
+  js->key_k = ts->key_k;
+  js->q_h = ts->q_h;
+  js->q_k = ts->q_k;
+  js->ctx = ts->ctx;
+  return 1;
+}
+
+/* The index in T of the class V (CLS[i] holds the two constructors of class
+   i), or T->c when V is not in T. With ADD, a new class takes the next index
+   (B3-8: first use) and its claimCom numbers (trw_class, B3-16), up to
+   JR_C_MAX classes. */
+static uint32_t tk_class_index(const Machine *m, JrTable *t, uint32_t (*cls)[2], const Value *v, int add) {
+  uint32_t j = v->args[0]->inst;
+  uint32_t s = v->args[1]->inst;
+  uint32_t i = 0;
+  while (i < t->c && (cls[i][0] != j || cls[i][1] != s)) i++;
+  if (i < t->c || !add || t->c == JR_C_MAX || j >= m->ctor_count || s >= m->ctor_count)
+    return i;
+  cls[i][0] = j;
+  cls[i][1] = s;
+  trw_class(&t->juris[i], &t->status[i], j - m->families[m->ctors[j].family].first_ctor,
+            s - m->families[m->ctors[s].family].first_ctor);
+  t->c++;
+  return i;
+}
+
+/* The JrTable of the closed rTable rows ROWS (B3-8): the classes in
+   first-use order (h, then k), admit and cap from the rows, and *NM caps by
+   jointr_caps. 0 on no row, a duplicate pair, more than JR_C_MAX classes or
+   a cap out of the host caps. */
+static int tk_table(const Machine *m, JrTable *t, uint32_t (*cls)[2], uint32_t *nm, const Value *rows) {
+  uint64_t caps[JR_C_MAX * JR_C_MAX + 1u];
+  memset(t, 0, sizeof *t);
+  while (val_is(rows, OP_CONS)) {
+    const Value *row = rows->args[0];
+    uint32_t h = tk_class_index(m, t, cls, row->args[0]->args[0], 1);
+    uint32_t k = h < t->c ? tk_class_index(m, t, cls, row->args[0]->args[1], 1) : t->c;
+    if (k >= t->c || t->admit[h][k] != 0u)
+      return 0;
+    t->admit[h][k] = 1u;
+    t->cap[h][k] = row->args[1]->args[0]->nat;
+    rows = rows->args[1];
+  }
+  return t->c > 0u && jointr_caps(caps, nm, t);
+}
+
+/* jrSend rows a st q [r, r_h, seed] (B3-4): some M1 of jointr_send for the
+   class A of H. */
+static const Value *tk_jr_send(Machine *m, const Value *const *a, uint32_t n) {
+  JrTable t;
+  JrStatement js;
+  TrStatement ts;
+  uint32_t cls[JR_C_MAX][2];
+  const Value *part[9];
+  U256 sec[3];
+  JrM1 *m1;
+  U256 *w;
+  uint32_t nm = 0;
+  uint32_t i;
+  if (!tk_rows(a[0]) || !tk_class(a[1]) || !tk_st(part, a[2]) || !tk_units(a[3]) || !tk_words(a[4]))
+    return opaque(m, OP_JR_SEND, a, n);
+  if (!tk_table(m, &t, cls, &nm, a[0]) || !tk_statement(&js, &ts, part) || !tk_get(sec, a[4], 3u))
+    return constant(m, OP_NONE);
+  i = tk_class_index(m, &t, cls, a[1], 0);
+  m1 = arena_alloc(m->arena, sizeof *m1);
+  w = tk_buf(m, trw_m1_len(t.c, nm));
+  if (m1 == NULL || w == NULL)
+    return NULL;
+  if (i >= t.c || jointr_send(m1, &t, &js, a[3]->args[0]->nat, &sec[0], i, &sec[1], &sec[2]) != JR_OK)
+    return constant(m, OP_NONE);
+  if (!trw_m1_put(w, trw_m1_len(t.c, nm), m1, t.c, nm))
+    return internal(m, "a transfer message that does not encode");
+  return tk_list(m, w, trw_m1_len(t.c, nm));
+}
+
+/* jrSelect rows b st m1 [r_k, x_k, seed] (B3-4): some M2 of jointr_select for
+   the class B of K. */
+static const Value *tk_jr_select(Machine *m, const Value *const *a, uint32_t n) {
+  JrTable t;
+  JrStatement js;
+  TrStatement ts;
+  uint32_t cls[JR_C_MAX][2];
+  const Value *part[9];
+  U256 sec[3];
+  JrM1 *m1;
+  JrM2 *m2;
+  U256 *w1;
+  U256 *w2;
+  uint32_t nm = 0;
+  uint32_t b;
+  if (!tk_rows(a[0]) || !tk_class(a[1]) || !tk_st(part, a[2]) || !tk_words(a[3]) || !tk_words(a[4]))
+    return opaque(m, OP_JR_SELECT, a, n);
+  if (!tk_table(m, &t, cls, &nm, a[0]) || !tk_statement(&js, &ts, part) || !tk_get(sec, a[4], 3u))
+    return constant(m, OP_NONE);
+  b = tk_class_index(m, &t, cls, a[1], 0);
+  m1 = arena_alloc(m->arena, sizeof *m1);
+  m2 = arena_alloc(m->arena, sizeof *m2);
+  w1 = tk_buf(m, trw_m1_len(t.c, nm));
+  w2 = tk_buf(m, trw_m2_len(t.c));
+  if (m1 == NULL || m2 == NULL || w1 == NULL || w2 == NULL)
+    return NULL;
+  if (b >= t.c || !tk_get(w1, a[3], trw_m1_len(t.c, nm)) || !trw_m1_get(m1, w1, trw_m1_len(t.c, nm), t.c, nm) ||
+      jointr_select(m2, m1, &t, &js, b, &sec[0], &sec[1], &sec[2]) != JR_OK)
+    return constant(m, OP_NONE);
+  if (!trw_m2_put(w2, trw_m2_len(t.c), m2, t.c))
+    return internal(m, "a transfer message that does not encode");
+  return tk_list(m, w2, trw_m2_len(t.c));
+}
+
+/* jrOpen rows st m1 m2 [x_h] (B3-4, B3-5): some M3 of jointr_open, or some
+   nil when the gate is closed (JR_CLOSED). */
+static const Value *tk_jr_open(Machine *m, const Value *const *a, uint32_t n) {
+  JrTable t;
+  JrStatement js;
+  TrStatement ts;
+  uint32_t cls[JR_C_MAX][2];
+  const Value *part[9];
+  U256 sec[1];
+  JrM1 *m1;
+  JrM2 *m2;
+  JrM3 m3;
+  U256 *w1;
+  U256 *w2;
+  U256 w3[TRW_M3_LEN];
+  uint32_t nm = 0;
+  JrResult r;
+  if (!tk_rows(a[0]) || !tk_st(part, a[1]) || !tk_words(a[2]) || !tk_words(a[3]) || !tk_words(a[4]))
+    return opaque(m, OP_JR_OPEN, a, n);
+  if (!tk_table(m, &t, cls, &nm, a[0]) || !tk_statement(&js, &ts, part) || !tk_get(sec, a[4], 1u))
+    return constant(m, OP_NONE);
+  m1 = arena_alloc(m->arena, sizeof *m1);
+  m2 = arena_alloc(m->arena, sizeof *m2);
+  w1 = tk_buf(m, trw_m1_len(t.c, nm));
+  w2 = tk_buf(m, trw_m2_len(t.c));
+  if (m1 == NULL || m2 == NULL || w1 == NULL || w2 == NULL)
+    return NULL;
+  if (!tk_get(w1, a[2], trw_m1_len(t.c, nm)) || !trw_m1_get(m1, w1, trw_m1_len(t.c, nm), t.c, nm) ||
+      !tk_get(w2, a[3], trw_m2_len(t.c)) || !trw_m2_get(m2, w2, trw_m2_len(t.c), t.c))
+    return constant(m, OP_NONE);
+  r = jointr_open(&m3, m1, m2, &t, &js, &sec[0]);
+  if (r == JR_CLOSED)
+    return some_of(m, constant(m, OP_NIL));
+  if (r != JR_OK)
+    return constant(m, OP_NONE);
+  if (!trw_m3_put(w3, TRW_M3_LEN, &m3))
+    return internal(m, "a transfer message that does not encode");
+  return tk_list(m, w3, TRW_M3_LEN);
+}
+
+/* transferProve st q mu [r, x_h, seed] (B3-4, B3-7): some (1) to (3) of
+   transfer_prove. */
+static const Value *tk_transfer_prove(Machine *m, const Value *const *a, uint32_t n) {
+  JrStatement js;
+  TrStatement ts;
+  const Value *part[9];
+  U256 sec[3];
+  TransferProof *pf;
+  U256 *w;
+  if (!tk_st(part, a[0]) || !tk_units(a[1]) || !tk_units(a[2]) || !tk_words(a[3]))
+    return opaque(m, OP_TRANSFER_PROVE, a, n);
+  if (!tk_statement(&js, &ts, part) || !tk_get(sec, a[3], 3u))
+    return constant(m, OP_NONE);
+  pf = arena_alloc(m->arena, sizeof *pf);
+  w = tk_buf(m, TRW_PROOF_LEN);
+  if (pf == NULL || w == NULL)
+    return NULL;
+  if (transfer_prove(pf, &ts, a[1]->args[0]->nat, &sec[0], a[2]->args[0]->nat, &sec[1], &sec[2]) != TR_OK)
+    return constant(m, OP_NONE);
+  if (!trw_proof_put(w, TRW_PROOF_LEN, pf))
+    return internal(m, "a transfer proof that does not encode");
+  return tk_list(m, w, TRW_PROOF_LEN);
+}
+
+/* transferVerify rows st proof (B3-6, D3): some flagYes only when
+   transfer_verify and jointr_verify both pass; some flagNo on a failed
+   check or a closed gate. A list that does not decode, a bad table and a
+   host refusal give none. */
+static const Value *tk_transfer_verify(Machine *m, const Value *const *a, uint32_t n) {
+  JrTable t;
+  JrStatement js;
+  TrStatement ts;
+  uint32_t cls[JR_C_MAX][2];
+  const Value *part[9];
+  const Value *pp[4];
+  TransferProof *pf;
+  JrM1 *m1;
+  JrM2 *m2;
+  JrM3 m3;
+  U256 *w0;
+  U256 *w1;
+  U256 *w2;
+  U256 w3[TRW_M3_LEN];
+  uint32_t nm = 0;
+  TrResult tr;
+  JrResult jr;
+  if (!tk_rows(a[0]) || !tk_st(part, a[1]) || !tk_proof(pp, a[2]))
+    return opaque(m, OP_TRANSFER_VERIFY, a, n);
+  if (!tk_table(m, &t, cls, &nm, a[0]) || !tk_statement(&js, &ts, part))
+    return constant(m, OP_NONE);
+  pf = arena_alloc(m->arena, sizeof *pf);
+  m1 = arena_alloc(m->arena, sizeof *m1);
+  m2 = arena_alloc(m->arena, sizeof *m2);
+  w0 = tk_buf(m, TRW_PROOF_LEN);
+  w1 = tk_buf(m, trw_m1_len(t.c, nm));
+  w2 = tk_buf(m, trw_m2_len(t.c));
+  if (pf == NULL || m1 == NULL || m2 == NULL || w0 == NULL || w1 == NULL || w2 == NULL)
+    return NULL;
+  if (!tk_get(w0, pp[0], TRW_PROOF_LEN) || !trw_proof_get(pf, w0, TRW_PROOF_LEN) ||
+      !tk_get(w1, pp[1], trw_m1_len(t.c, nm)) || !trw_m1_get(m1, w1, trw_m1_len(t.c, nm), t.c, nm) ||
+      !tk_get(w2, pp[2], trw_m2_len(t.c)) || !trw_m2_get(m2, w2, trw_m2_len(t.c), t.c) ||
+      !tk_get(w3, pp[3], TRW_M3_LEN) || !trw_m3_get(&m3, w3, TRW_M3_LEN))
+    return constant(m, OP_NONE);
+  tr = transfer_verify(pf, &ts);
+  jr = jointr_verify(m1, m2, &m3, &t, &js);
+  if (tr == TR_REFUSED || jr == JR_REFUSED)
+    return constant(m, OP_NONE);
+  return some_of(m, flag(m, tr == TR_OK && jr == JR_OK));
+}
+
+/* The issue ctx (B3-9, B3-19): the thr_hash chain from TK_ISSUE_TAG over
+   keyOpenC, the key of the holder, the two Ct (c1.x, c1.y, c2.x, c2.y each)
+   and M. */
+static void tk_absorb(U256 *ctx, const U256 *w) {
+  U256 h;
+  thr_hash(&h, ctx, w);
+  *ctx = h;
+}
+
+static void tk_absorb_point(U256 *ctx, const GroupPoint *p) {
+  U256 x;
+  U256 y;
+  group_to_words(&x, &y, p);
+  tk_absorb(ctx, &x);
+  tk_absorb(ctx, &y);
+}
+
+/* The keys, the two Ct, M and the ctx of an issue call A. 0 when a point is
+   off the curve. */
+static int tk_issue(GroupPoint *key, ElgCipher *ct, U256 *mw, U256 *ctx, const Value *const *a) {
+  uint32_t i;
+  if (!tk_point(&key[0], a[0]) || !tk_point(&key[1], a[1]) || !tk_cipher(&ct[0], a[2]->args[0]) ||
+      !tk_cipher(&ct[1], a[2]->args[1]))
+    return 0;
+  u256_from_u64(mw, a[3]->args[0]->nat);
+  u256_from_u64(ctx, TK_ISSUE_TAG);
+  for (i = 0; i < 2u; i++) tk_absorb_point(ctx, &key[i]);
+  for (i = 0; i < 2u; i++) {
+    tk_absorb_point(ctx, &ct[i].c1);
+    tk_absorb_point(ctx, &ct[i].c2);
+  }
+  tk_absorb(ctx, mw);
+  return 1;
+}
+
+/* The 5 words of a SigDleq: a and b as (x, y), then z (the trwire form). */
+static void tk_dleq_put(U256 *w, const SigDleq *p) {
+  group_to_words(&w[0], &w[1], &p->a);
+  group_to_words(&w[2], &w[3], &p->b);
+  w[4] = p->z;
+}
+
+static int tk_dleq_get(SigDleq *p, const U256 *w) {
+  memset(p, 0, sizeof *p);
+  p->z = w[4];
+  return group_from_words(&p->a, &w[0], &w[1]) && group_from_words(&p->b, &w[2], &w[3]);
+}
+
+/* issueProve keyOpenC key cts m [r_o, r_i] (B3-4, B3-9): some 10 words, the
+   two sig_rand proofs that cts = (ct_o, ct_i) encrypt m under keyOpenC with
+   r_o and under key with r_i. */
+static const Value *tk_issue_prove(Machine *m, const Value *const *a, uint32_t n) {
+  GroupPoint key[2];
+  ElgCipher ct[2];
+  SigDleq pf[2];
+  U256 sec[2];
+  U256 mw;
+  U256 ctx;
+  U256 w[10];
+  if (!closed_point(a[0]) || !closed_point(a[1]) || !tk_ct2(a[2]) || !tk_units(a[3]) || !tk_words(a[4]))
+    return opaque(m, OP_ISSUE_PROVE, a, n);
+  if (!tk_issue(key, ct, &mw, &ctx, a) || !tk_get(sec, a[4], 2u) ||
+      sig_rand_prove(&pf[0], &key[0], &ct[0], &mw, &sec[0], &ctx) != SIG_OK ||
+      sig_rand_prove(&pf[1], &key[1], &ct[1], &mw, &sec[1], &ctx) != SIG_OK)
+    return constant(m, OP_NONE);
+  tk_dleq_put(&w[0], &pf[0]);
+  tk_dleq_put(&w[5], &pf[1]);
+  return tk_list(m, w, 10u);
+}
+
+/* issueVerify keyOpenC key cts m proof (B3-9): some flagYes when both
+   sig_rand proofs pass, some flagNo on a reject; a proof of another length
+   than 10 words, a point off the curve and SIG_REFUSED give none. */
+static const Value *tk_issue_verify(Machine *m, const Value *const *a, uint32_t n) {
+  GroupPoint key[2];
+  ElgCipher ct[2];
+  SigDleq pf[2];
+  U256 mw;
+  U256 ctx;
+  U256 w[10];
+  SigResult r0;
+  SigResult r1;
+  if (!closed_point(a[0]) || !closed_point(a[1]) || !tk_ct2(a[2]) || !tk_units(a[3]) || !tk_words(a[4]))
+    return opaque(m, OP_ISSUE_VERIFY, a, n);
+  if (!tk_issue(key, ct, &mw, &ctx, a) || !tk_get(w, a[4], 10u) || !tk_dleq_get(&pf[0], &w[0]) ||
+      !tk_dleq_get(&pf[1], &w[5]))
+    return constant(m, OP_NONE);
+  r0 = sig_rand_verify(&pf[0], &key[0], &ct[0], &mw, &ctx);
+  r1 = sig_rand_verify(&pf[1], &key[1], &ct[1], &mw, &ctx);
+  if (r0 == SIG_REFUSED || r1 == SIG_REFUSED)
+    return constant(m, OP_NONE);
+  return some_of(m, flag(m, r0 == SIG_OK && r1 == SIG_OK));
+}
+
 /* Only the trusted domain Pos family has the Size-indexed position encoding. */
 static int zk_pos_type(const Machine *m, const Value *t) {
   if (!val_is(t, OP_FAMILY) || t->inst >= m->family_count || t->argc != 1u)
@@ -2619,6 +3071,13 @@ static const Value *transp_data(Machine *m, const Value *head, const Value *line
   case OP_CLAIM_COM:
   case OP_ATTEST_SIGN:
   case OP_ATTEST_VERIFY:
+  case OP_JR_SEND:
+  case OP_JR_SELECT:
+  case OP_JR_OPEN:
+  case OP_TRANSFER_PROVE:
+  case OP_TRANSFER_VERIFY:
+  case OP_ISSUE_PROVE:
+  case OP_ISSUE_VERIFY:
   case OP_RTABLE:
   case OP_SCHNORR_OK:
   case OP_ZK_CAST:
@@ -3635,6 +4094,20 @@ static const Value *reduce_op(Machine *m, Op op, uint32_t inst, uint32_t field, 
     return attest_sign(m, a, n);
   case OP_ATTEST_VERIFY:
     return attest_verify(m, a, n);
+  case OP_JR_SEND:
+    return tk_jr_send(m, a, n);
+  case OP_JR_SELECT:
+    return tk_jr_select(m, a, n);
+  case OP_JR_OPEN:
+    return tk_jr_open(m, a, n);
+  case OP_TRANSFER_PROVE:
+    return tk_transfer_prove(m, a, n);
+  case OP_TRANSFER_VERIFY:
+    return tk_transfer_verify(m, a, n);
+  case OP_ISSUE_PROVE:
+    return tk_issue_prove(m, a, n);
+  case OP_ISSUE_VERIFY:
+    return tk_issue_verify(m, a, n);
   case OP_RTABLE: /* S4 C6: the checker gives the static list, so no core has it */
     return internal(m, "an rTable after the check");
   case OP_SCHNORR_OK:

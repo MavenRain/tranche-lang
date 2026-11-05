@@ -155,12 +155,14 @@ def attOffCom : Option Flag :=
 -- The attested check (tranche-lang S4 C5, Q-S4-4 (a) and Q-S4-5 (a)): the
 -- issuers of con2 are p0 and p1, of con1 only p0. idYes is att2 over
 -- ring2; idBadAtt has a bad att; idRemoved is idYes under con1; idNotIssuer
--- is a good signature over ring3, and p2 of ring3 is not an issuer.
+-- is a good signature over ring3, and p2 of ring3 is not an issuer. The
+-- keyOpenC of each is (0, 0), the point at infinity, as keyOpen is 0u
+-- (Q-S5-6 (a)).
 def con2 : Option Covenant :=
-  bind p0 (fun (a : CPoint) => bind p1 (fun (b : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmCons CPoint a (fmCons CPoint b (fmUnit CPoint))))))
+  bind p0 (fun (a : CPoint) => bind p1 (fun (b : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmCons CPoint a (fmCons CPoint b (fmUnit CPoint))) (pair 0u 0u) nil)))
 
 def con1 : Option Covenant :=
-  bind p0 (fun (a : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmCons CPoint a (fmUnit CPoint))))
+  bind p0 (fun (a : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmCons CPoint a (fmUnit CPoint)) (pair 0u 0u) nil))
 
 def idYes : Option (Except Identity) :=
   bind con2 (fun (n : Covenant) => bind ring2 (fun (rg : List CPoint) => bind p2 (fun (k : CPoint) => bind comH (fun (c : CPoint) => bind att2 (fun (s : List U256) => some (attested n (makeIdentity k c rg s)))))))
