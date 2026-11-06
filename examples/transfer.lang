@@ -14,6 +14,8 @@ def R : Claims -> Claims -> Option Units :=
 
 def table : List (Prod (Prod Claims Claims) Units) := rTable R
 
+def tableRows : Rows := rowsOf table
+
 def cls : Claims := pair jurisB accredited
 
 def other : Claims := pair jurisA accredited
@@ -34,7 +36,7 @@ def idOf : U256 -> U256 -> Option Identity :=
   fun (x : U256) (r : U256) => bind ring2 (fun (rg : List CPoint) => bind (ecMul g x) (fun (k : CPoint) => bind (claimCom 2 1 r) (fun (c : CPoint) => bind (attestSign rg k0 k c) (fun (s : List U256) => some (makeIdentity k c rg s)))))
 
 def cov : Option Covenant :=
-  bind p0 (fun (a : CPoint) => bind p1 (fun (b : CPoint) => bind (ecMul g 17u) (fun (ko : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmCons CPoint a (fmCons CPoint b (fmUnit CPoint))) ko table))))
+  bind p0 (fun (a : CPoint) => bind p1 (fun (b : CPoint) => bind (ecMul g 17u) (fun (ko : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmCons CPoint a (fmCons CPoint b (fmUnit CPoint))) ko tableRows none))))
 
 def holdH : Option Holding :=
   bind (idOf 11u 23u) (fun (d : Identity) => bind (ecMul g 11u) (fun (kh : CPoint) => bind (ecMul g 17u) (fun (ko : CPoint) => bind (ctEnc kh 50 (nonceOf 37u)) (fun (o : Ct) => bind (ctEnc ko 50 (nonceOf 37u)) (fun (p : Ct) => some (makeHolding d o p))))))

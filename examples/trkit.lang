@@ -15,6 +15,8 @@ def R : Claims -> Claims -> Option Units :=
 
 def table : List (Prod (Prod Claims Claims) Units) := rTable R
 
+def tableRows : Rows := rowsOf table
+
 def cls : Claims := pair jurisB accredited
 
 def other : Claims := pair jurisA accredited
@@ -36,19 +38,19 @@ def checked : Option Flag -> Nat :=
 
 -- jrSend on a class that is not the class of h: no M1.
 def sendClass : Nat :=
-  onSt (fun (s : Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod Ct (Prod Ct (Prod Ct Ct)))))))) => proved (jrSend table other s (unitsOf 5) (cons 19u (cons 23u (cons 31u nil)))))
+  onSt (fun (s : Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod Ct (Prod Ct (Prod Ct Ct)))))))) => proved (jrSend tableRows other s (unitsOf 5) (cons 19u (cons 23u (cons 31u nil)))))
 
 -- jrSend on a secrets list without the seed: no M1.
 def sendShort : Nat :=
-  onSt (fun (s : Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod Ct (Prod Ct (Prod Ct Ct)))))))) => proved (jrSend table cls s (unitsOf 5) (cons 19u (cons 23u nil))))
+  onSt (fun (s : Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod Ct (Prod Ct (Prod Ct Ct)))))))) => proved (jrSend tableRows cls s (unitsOf 5) (cons 19u (cons 23u nil))))
 
 -- jrSelect (M2) on a nil M1: no M2.
 def selectNil : Nat :=
-  onSt (fun (s : Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod Ct (Prod Ct (Prod Ct Ct)))))))) => proved (jrSelect table cls s nil (cons 29u (cons 13u (cons 41u nil)))))
+  onSt (fun (s : Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod Ct (Prod Ct (Prod Ct Ct)))))))) => proved (jrSelect tableRows cls s nil (cons 29u (cons 13u (cons 41u nil)))))
 
 -- jrOpen (M3) on a nil M1 and a nil M2: no M3.
 def openNil : Nat :=
-  onSt (fun (s : Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod Ct (Prod Ct (Prod Ct Ct)))))))) => proved (jrOpen table s nil nil (cons 11u nil)))
+  onSt (fun (s : Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod Ct (Prod Ct (Prod Ct Ct)))))))) => proved (jrOpen tableRows s nil nil (cons 11u nil)))
 
 -- transferProve when the own balance 4 is less than q = 5: no proof.
 def proveOver : Nat :=
@@ -60,7 +62,7 @@ def proveShort : Nat :=
 
 -- transferVerify on nil proof lists: no flagYes.
 def verifyNil : Nat :=
-  onSt (fun (s : Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod Ct (Prod Ct (Prod Ct Ct)))))))) => checked (transferVerify table s (pair nil (pair nil (pair nil nil)))))
+  onSt (fun (s : Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod Ct (Prod Ct (Prod Ct Ct)))))))) => checked (transferVerify tableRows s (pair nil (pair nil (pair nil nil)))))
 
 -- The issue pair, o (x_o 17) to h (x_h 11): issueProve, then issueVerify.
 -- co and ci hold m = 7 (r_o 47, r_i 53). pm is the m of the proof, vm the
@@ -106,7 +108,7 @@ def bareOf : U256 -> U256 -> Option Identity :=
   fun (x : U256) (r : U256) => bind ring2 (fun (rg : List CPoint) => bind (ecMul g x) (fun (k : CPoint) => bind (claimCom 2 1 r) (fun (c : CPoint) => some (makeIdentity k c rg nil))))
 
 def cov : Option Covenant :=
-  bind p0 (fun (a : CPoint) => bind p1 (fun (b : CPoint) => bind (ecMul g 17u) (fun (ko : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmCons CPoint a (fmCons CPoint b (fmUnit CPoint))) ko table))))
+  bind p0 (fun (a : CPoint) => bind p1 (fun (b : CPoint) => bind (ecMul g 17u) (fun (ko : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmCons CPoint a (fmCons CPoint b (fmUnit CPoint))) ko tableRows none))))
 
 def holdH : Option Holding :=
   bind (idOf 11u 23u) (fun (d : Identity) => bind (ecMul g 11u) (fun (kh : CPoint) => bind (ecMul g 17u) (fun (ko : CPoint) => bind (ctEnc kh 50 (nonceOf 37u)) (fun (o : Ct) => bind (ctEnc ko 50 (nonceOf 37u)) (fun (p : Ct) => some (makeHolding d o p))))))
@@ -224,3 +226,41 @@ def pubSum : Measure -> Except Ct :=
 -- (cpointEq on both points), and the supply is the same: 0, else 2.
 def trL2 : Option (Except Nat) :=
   bind cov (fun (n : Covenant) => bind holdH (fun (h : Holding) => bind (idOf 11u 23u) (fun (d : Identity) => bind (idOf 13u 29u) (fun (e : Identity) => bind qAll (fun (q : Prod Ct (Prod Ct Ct)) => some (exBind Measure Nat (makeMeasure (fmEta Holding h) (unitsOf 100) 0u) (fun (s : Measure) => exBind Measure Nat (transfer n s (makeTransfer d e q gProof rxG zG)) (fun (r : Measure) => exBind Ct Nat (pubSum s) (fun (a : Ct) => exBind Ct Nat (pubSum r) (fun (b : Ct) => exEta Nat (flagIf (cpointEq (ctC1 a) (ctC1 b)) (flagIf (cpointEq (ctC2 a) (ctC2 b)) (flagIf (u256Eq (toU256 (unitsVal (supply s))) (toU256 (unitsVal (supply r)))) 0 2) 2) 2)))))))))))
+
+-- The C12 issue rows (S6 BUILD3 3b, Q-S6-15 (c), Q-S6-16 (a), Q-S6-17 (a)).
+-- covK is cov with keyAppend = the x of 11 g, tAmend 1 and policy some 0.
+-- ledK holds one amend row (covK, 1). rxI and zI are the Schnorr
+-- signature under the key 11 (seed 0x3b) on m1 = issDigest ledK s i at
+-- supply 100 and m2 = wordsDigest 0u of the proof. isRun f u runs f cov
+-- ledK on the measure of fmEta holdH with the supply u and the issue of
+-- ibRun (7 to h, the proof of 7). It gives the supply after the issue, or
+-- the failure. A none is a none before f.
+def covK : Option Covenant :=
+  bind cov (fun (n : Covenant) => bind (ecMul g 11u) (fun (kh : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u (first kh)) (issuers n) (keyOpenC n) (covRows n) (some 0))))
+
+def ledK : Option (FreeMon CDecided) :=
+  bind covK (fun (k : Covenant) => some (fmCons CDecided (pair k 1) (fmUnit CDecided)))
+
+def rxI : U256 := 0xf248b40e6f68fae13b46b1095475bd269a41581f12c0b655368103952c1a9d32u
+
+def zI : U256 := 0xc5ba52e3c76751e6b6552b5d116788b7e6194e864d20efa454f6c264529c7fe7u
+
+def isRun : (Covenant -> FreeMon CDecided -> Measure -> Issue -> Except Measure) -> Nat -> Option (Except Nat) :=
+  fun (f : Covenant -> FreeMon CDecided -> Measure -> Issue -> Except Measure) (u : Nat) => bind cov (fun (n : Covenant) => bind ledK (fun (l : FreeMon CDecided) => bind holdH (fun (h : Holding) => bind (idOf 11u 23u) (fun (d : Identity) => bind (ecMul g 11u) (fun (kh : CPoint) => bind (ecMul g 17u) (fun (ko : CPoint) => bind (ctEnc ko 7 (nonceOf 47u)) (fun (co : Ct) => bind (ctEnc kh 7 (nonceOf 53u)) (fun (ci : Ct) => bind (issueProve ko kh (pair co ci) (unitsOf 7) (cons 47u (cons 53u nil))) (fun (pf : List U256) => some (exBind Measure Nat (makeMeasure (fmEta Holding h) (unitsOf u) 0u) (fun (s : Measure) => exBind Measure Nat (f n l s (makeIssue d (unitsOf 7) (pair co ci) pf)) (fun (r : Measure) => exEta Nat (unitsVal (supply r))))))))))))))
+
+-- Gov cov ledK is covK, and the signature holds under its keyAppend: 100 + 7.
+def isGood : Option (Except Nat) :=
+  isRun (fun (c : Covenant) (l : FreeMon CDecided) (s : Measure) (i : Issue) => issue c l (authOf rxI zI) s i) 100
+
+-- z + 1: the signature fails, so noQuorum.
+def isBadZ : Option (Except Nat) :=
+  isRun (fun (c : Covenant) (l : FreeMon CDecided) (s : Measure) (i : Issue) => issue c l (authOf rxI 0xc5ba52e3c76751e6b6552b5d116788b7e6194e864d20efa454f6c264529c7fe8u) s i) 100
+
+-- A replay: the same signature on the measure after the first issue. m1
+-- binds the supply in force (107 now), so noQuorum.
+def isReplay : Option (Except Nat) :=
+  isRun (fun (c : Covenant) (l : FreeMon CDecided) (s : Measure) (i : Issue) => exBind Measure Measure (issue c l (authOf rxI zI) s i) (fun (r : Measure) => issue c l (authOf rxI zI) r i)) 100
+
+-- The empty ledger: Gov cov L is cov, its keyAppend is 0u, so noQuorum.
+def isNoKey : Option (Except Nat) :=
+  isRun (fun (c : Covenant) (l : FreeMon CDecided) (s : Measure) (i : Issue) => issue c (fmUnit CDecided) (authOf rxI zI) s i) 100

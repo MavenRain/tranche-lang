@@ -357,11 +357,17 @@ def claimStatus : Claims -> Status := fun (c : Claims) => second c
 
 -- A Units is an amount below 2^32 (S5 C1, toUnits below). A Rows is the
 -- table of a transfer rule, rTable R (S5 C10, Q-S5-10 (a)): each row is
--- a pair of claims and the cap of that pair. A Covenant holds its Rows:
--- makeCovenant takes them as its 4th argument, and covRows gives them.
+-- a pair of claims and the cap of that pair. A Rows is a FreeMon of rows
+-- (S6 C3, Q-S6-10 (a)), so fmIsSet gives its set proof, and rowsOf gives
+-- the Rows of the List of rTable R. The kit words read a closed Rows in
+-- order (Q-S6-12 (a)). A Covenant holds its Rows: makeCovenant takes them
+-- as its 4th argument, and covRows gives them.
 family Units := unitsOf (unitsVal : Nat)
 
-def Rows : Type 0 := List (Prod (Prod Claims Claims) Units)
+def Rows : Type 0 := FreeMon (Prod (Prod Claims Claims) Units)
+
+def rowsOf : List (Prod (Prod Claims Claims) Units) -> Rows :=
+  fun (l : List (Prod (Prod Claims Claims) Units)) => fold (fun (x : Prod (Prod Claims Claims) Units) (r : Rows) => fmCons (Prod (Prod Claims Claims) Units) x r) (fmUnit (Prod (Prod Claims Claims) Units)) l
 
 -- The covenant and the identity (S4, Q-S4-1 (a), Q-S4-4 (a), Q-S4-5 (a)
 -- and Q-S4-6: the name Covenant is the social-choice one of the
@@ -382,10 +388,16 @@ def CPoint : Type 0 := Prod U256 U256
 
 def cpointIsSet : isSet CPoint := isSetProd U256 U256 u256IsSet u256IsSet
 
-def Covenant : Type 0 := Prod Polity (Prod (FreeMon CPoint) (Prod CPoint Rows))
+-- The policy index (S6, Q-S6-2 (a)). A D is an index into the program
+-- table of W (S6 C2). The policy of a Covenant is an Option D, its 5th
+-- part: none gives the fate impossible. makeCovenant takes it as its
+-- 5th argument, and covPolicy gives it.
+def D : Type 0 := Nat
 
-def makeCovenant : Polity -> FreeMon CPoint -> CPoint -> Rows -> Covenant :=
-  fun (s : Polity) (m : FreeMon CPoint) (k : CPoint) (t : Rows) => pair s (pair m (pair k t))
+def Covenant : Type 0 := Prod Polity (Prod (FreeMon CPoint) (Prod CPoint (Prod Rows (Option D))))
+
+def makeCovenant : Polity -> FreeMon CPoint -> CPoint -> Rows -> Option D -> Covenant :=
+  fun (s : Polity) (m : FreeMon CPoint) (k : CPoint) (t : Rows) (d : Option D) => pair s (pair m (pair k (pair t d)))
 
 def polity : Covenant -> Polity := fun (n : Covenant) => first n
 
@@ -393,7 +405,85 @@ def issuers : Covenant -> FreeMon CPoint := fun (n : Covenant) => first (second 
 
 def keyOpenC : Covenant -> CPoint := fun (n : Covenant) => first (second (second n))
 
-def covRows : Covenant -> Rows := fun (n : Covenant) => second (second (second n))
+def covRows : Covenant -> Rows := fun (n : Covenant) => first (second (second (second n)))
+
+def covPolicy : Covenant -> Option D := fun (n : Covenant) => second (second (second (second n)))
+
+-- The kinds of inflow and the policy W (S6 C2, Q-S6-2, Q-S6-9 and Q-S6-11
+-- (a)). A W holds a map Kind -> U256 -> U256, and wApply reads it through
+-- a clamp: a value above the inflow a gives a, so W k a <= a holds for
+-- each program and each a by construction (the kernel does not prove
+-- u256Le a a for an open a). The program table: index 0 is wAll (each
+-- inflow is distributable) and index 1 is wRent (rent only, a sale gives
+-- 0u). policyOf is total: an index out of the table gives wZero (nothing
+-- is distributable), and decideC (C3) refuses such an index in an
+-- amendment by policyKnown.
+family Kind := rent | sale
+
+family W := wOf (wMap : Kind -> U256 -> U256)
+
+def wApply : W -> Kind -> U256 -> U256 :=
+  fun (w : W) (k : Kind) (a : U256) => elim (fun (u : W) => U256) (fun (m : Kind -> U256 -> U256) => flagIf (u256Le (m k a) a) (m k a) a) w
+
+def wAll : W := wOf (fun (k : Kind) (a : U256) => a)
+
+def wRent : W := wOf (fun (k : Kind) (a : U256) => fold a 0u k)
+
+def wZero : W := wOf (fun (k : Kind) (a : U256) => 0u)
+
+def policyOf : D -> W := fun (d : D) => flagIf (natEq d 0) wAll (flagIf (natEq d 1) wRent wZero)
+
+def policyKnown : D -> Flag := fun (d : D) => natLe d 1
+
+-- The fate of a Covenant (S6 C8, orbit-lang law 6, PLAN 4.3 Fate): the
+-- policy none gives impossible, and some d gives debreu d.
+family Fate := impossible | debreu (fateD : D)
+
+def fateOf : Covenant -> Fate :=
+  fun (n : Covenant) => option impossible (fun (d : D) => debreu d) (covPolicy n)
+
+-- The Covenant amend (S6 C3, Q-S6-1 (a), PLAN Gov): a decided amendment
+-- is a whole new Covenant and its yes count. decideC reads tAmend of the
+-- Covenant in force with natLe (the decideYes form) and refuses a new
+-- policy some d that is not in the table (policyKnown d is flagNo). The
+-- policy none is not an index, so decideC accepts it (the fate is
+-- impossible). stepC enacts a passed amendment and keeps the Covenant in
+-- force for a refused one. amendC folds the decided amendments in ledger
+-- order (fmChain into the set Covenant, covIsSet). The cairn Proposal,
+-- stepD and amendAll stay.
+def covIsSet : isSet Covenant :=
+  isSetProd Polity (Prod (FreeMon CPoint) (Prod CPoint (Prod Rows (Option D)))) polityIsSet (isSetProd (FreeMon CPoint) (Prod CPoint (Prod Rows (Option D))) (fmIsSet CPoint) (isSetProd CPoint (Prod Rows (Option D)) cpointIsSet (isSetProd Rows (Option D) (fmIsSet (Prod (Prod Claims Claims) Units)) optNatIsSet)))
+
+def CDecided : Type 0 := Prod Covenant Count
+
+def decideC : Covenant -> CDecided -> Flag :=
+  fun (n : Covenant) (c : CDecided) => flagIf (natLe (tAmend (polity n)) (second c)) (option flagYes (fun (d : D) => policyKnown d) (covPolicy (first c))) flagNo
+
+def stepC : Covenant -> CDecided -> Covenant :=
+  fun (n : Covenant) (c : CDecided) => flagIf (decideC n c) (first c) n
+
+def amendC : Covenant -> FreeMon CDecided -> Covenant := fmChain CDecided Covenant covIsSet stepC
+
+def Gov : Covenant -> FreeMon CDecided -> Covenant := amendC
+
+-- The Gov projection (S6 C9, Q-S6-2 (a), PLAN GovPi): the rows and the
+-- policy W of a Covenant. The policy none gives none (the fate is
+-- impossible), and some d gives the W of d in the table (policyOf).
+def GovPi : Covenant -> Option (Prod Rows W) :=
+  fun (n : Covenant) => option none (fun (d : D) => some (pair (covRows n) (policyOf d))) (covPolicy n)
+
+-- The aggregation of a fate and self-constitution (S6 C10, L13, L16,
+-- Q-S6-5 (a), PLAN IsSelfConstituting). AggOf is an elim into Type 0
+-- (the either form of examples/orbit.lang :65): the fate impossible
+-- gives Empty (no aggregation exists), and debreu d gives Unit.
+-- IsSelfConstituting c0 F holds a ledger L of decided amendments that
+-- takes c0 to F (Gov c0 L, the argument order of Gov), and an
+-- aggregation of the fate of F.
+def AggOf : Fate -> Type 0 :=
+  fun (f : Fate) => elim (fun (t : Fate) => Type 0) Empty (fun (d : D) => Unit) f
+
+def IsSelfConstituting : Covenant -> Covenant -> Type 0 :=
+  fun (c0 : Covenant) (F : Covenant) => Sigma (L : FreeMon CDecided) (Prod (AggOf (fateOf F)) (Path Covenant (Gov c0 L) F))
 
 def Identity : Type 0 := Prod CPoint (Prod CPoint (Prod (List CPoint) (List U256)))
 
@@ -632,6 +722,42 @@ family Auth := authOf (authR : U256) (authZ : U256)
 def authOk : Polity -> Auth -> Entry -> Record -> Verdict :=
   fun (s : Polity) (a : Auth) (e : Entry) (r : Record) => elim (fun (u : Auth) => Flag) (fun (rx : U256) (z : U256) => schnorrOk (keyAppend s) rx z (head r) e) a
 
+-- The issue check (S6 C12, Q-S5-8 (a), Q-S6-15 (c) and Q-S6-16 (a)). The
+-- signature of an issue binds m1 = issDigest L s i: tagIssue, the ledger
+-- digest of L, the supply in force, the to key, m and the 2 Ct of the
+-- issue. m2 is wordsDigest 0u of the proof words (the trProofDigest form).
+-- covDigest puts each part of a Covenant in the hash chain, with one word
+-- for no policy and a different word for some d. ledgerDigest chains each
+-- row of L in ledger order. A replay fails, because each issue changes the
+-- supply in force, and an issue adds no row to L (Q-S6-16). issue c0 L au
+-- is issueBy a n with n = Gov c0 L, and a checks au with schnorrOk under
+-- keyAppend of the polity of n.
+def claimsWord : U256 -> Claims -> U256 :=
+  fun (a : U256) (c : Claims) => hash (hash a (fold 0u 1u 2u (first c))) (fold 0u 1u (second c))
+
+def rowsDigest : U256 -> Rows -> U256 :=
+  fun (a : U256) (t : Rows) => fmChain (Prod (Prod Claims Claims) Units) U256 u256IsSet (fun (h : U256) (x : Prod (Prod Claims Claims) Units) => hash (claimsWord (claimsWord h (first (first x))) (second (first x))) (toU256 (unitsVal (second x)))) a t
+
+def polityDigest : U256 -> Polity -> U256 :=
+  fun (a : U256) (p : Polity) => hash (hash (hash (hash (hash (fmChain Point U256 u256IsSet (fun (h : U256) (x : Point) => hash h x) a (members p)) (toU256 (tAppend p))) (toU256 (tAmend p))) (toU256 (tOpen p))) (keyOpen p)) (keyAppend p)
+
+def policyWord : U256 -> Option D -> U256 :=
+  fun (a : U256) (p : Option D) => option (hash a 0u) (fun (n : D) => hash (hash a 1u) (toU256 n)) p
+
+def covDigest : U256 -> Covenant -> U256 :=
+  fun (a : U256) (c : Covenant) => policyWord (rowsDigest (cpWords (fmChain CPoint U256 u256IsSet cpWords (polityDigest a (polity c)) (issuers c)) (keyOpenC c)) (covRows c)) (covPolicy c)
+
+def ledgerDigest : FreeMon CDecided -> U256 :=
+  fun (L : FreeMon CDecided) => fmChain CDecided U256 u256IsSet (fun (h : U256) (x : CDecided) => hash (covDigest h (first x)) (toU256 (second x))) 0u L
+
+def tagIssue : Digest := 0x7472616e6368652d6973737565u
+
+def issDigest : FreeMon CDecided -> Measure -> Issue -> U256 :=
+  fun (L : FreeMon CDecided) (s : Measure) (i : Issue) => ctWords (ctWords (hash (cpWords (hash (hash tagIssue (ledgerDigest L)) (toU256 (unitsVal (supply s)))) (idKey (issTo i))) (toU256 (unitsVal (issM i)))) (first (issCts i))) (second (issCts i))
+
+def issue : Covenant -> FreeMon CDecided -> Auth -> Measure -> Issue -> Except Measure :=
+  fun (c0 : Covenant) (L : FreeMon CDecided) (au : Auth) (s : Measure) (i : Issue) => issueBy (fun (j : Issue) => elim (fun (u : Auth) => Flag) (fun (rx : U256) (z : U256) => schnorrOk (keyAppend (polity (Gov c0 L))) rx z (issDigest L s j) (wordsDigest 0u (issProof j))) au) (Gov c0 L) s i
+
 def append : Polity -> Auth -> Entry -> Record -> Option Record :=
   fun (s : Polity) (a : Auth) (e : Entry) (r : Record) => flagIf (authOk s a e r) (some (snoc e r)) none
 
@@ -674,6 +800,55 @@ def stepD : Polity -> Decided -> Polity :=
 
 def amendAll : FreeMon Decided -> Polity -> Polity :=
   fun (ds : FreeMon Decided) (s : Polity) => fmChain Decided Polity polityIsSet stepD s ds
+
+-- The amend ballot (S6 C4, Q-S6-3, Q-S6-13 and Q-S6-14 (a)). An
+-- AmendBallot is a SealedBallot, its ring (member keys as full points) and
+-- the bLSAG signature of zkSign on the proposal digest d: the list c_1,
+-- s_1 to s_n, I.x, I.y. The choice word is amendChoice (1u): the Bit
+-- ZKProof binds the vote, and ballot.lang signs the ciphertext digest on
+-- the chain (S9). keyImage takes the last two words of the signature, and
+-- amendTag is hash (hash I.x I.y) d, the zkcast form. castAmend gives none
+-- when the x of a ring key is not a member, when zkVerify does not accept,
+-- when the link tag is not amendTag, or when the tag is used (L15).
+def AmendBallot : Type 0 := Prod SealedBallot (Prod (List CPoint) (List U256))
+
+def amendSealed : AmendBallot -> SealedBallot := fun (a : AmendBallot) => first a
+
+def amendRing : AmendBallot -> List CPoint := fun (a : AmendBallot) => first (second a)
+
+def amendSig : AmendBallot -> List U256 := fun (a : AmendBallot) => second (second a)
+
+def amendChoice : U256 := 1u
+
+def KeyTag : Type 0 := Prod (Option U256) (Option U256)
+
+def keyNone : KeyTag := pair none none
+
+def keyStep : U256 -> KeyTag -> KeyTag :=
+  fun (x : U256) (p : KeyTag) => option (pair none (some x)) (fun (y : U256) => option (pair (some x) (some y)) (fun (u : U256) => p) (first p)) (second p)
+
+def keyImage : List U256 -> KeyTag := fun (sg : List U256) => fold keyStep keyNone sg
+
+def amendTag : Digest -> List U256 -> Option Digest :=
+  fun (d : Digest) (sg : List U256) => option none (fun (ix : U256) => option none (fun (iy : U256) => some (hash (hash ix iy) d)) (second (keyImage sg))) (first (keyImage sg))
+
+-- Members store only x, so admit the unique curve representative whose y
+-- is at most (p - 1) / 2. Otherwise k and n - k yield distinct key images
+-- for the same member. A signer with the other representative uses n - k.
+def isMemberKey : Polity -> CPoint -> Flag :=
+  fun (s : Polity) (p : CPoint) => flagIf (u256Le (second p) 0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffff7ffffe17u) (fmChain Point Flag flagIsSet (fun (f : Flag) (x : Point) => flagIf (u256Eq x (first p)) flagYes f) flagNo (members s)) flagNo
+
+def memberRing : Polity -> List CPoint -> Flag :=
+  fun (s : Polity) (rg : List CPoint) => fold (fun (x : CPoint) (f : Flag) => flagIf (isMemberKey s x) f flagNo) flagYes rg
+
+def amendOk : Covenant -> Digest -> AmendBallot -> Flag :=
+  fun (n : Covenant) (d : Digest) (a : AmendBallot) => flagIf (memberRing (polity n) (amendRing a)) (flagIf (option flagNo (fun (f : Flag) => f) (zkVerify (amendRing a) d amendChoice (amendSig a))) (option flagNo (fun (t : Digest) => u256Eq (linkTag (amendSealed a)) t) (amendTag d (amendSig a))) flagNo) flagNo
+
+def castAmend : Covenant -> Digest -> AmendBallot -> Box -> Option Box :=
+  fun (n : Covenant) (d : Digest) (a : AmendBallot) (box : Box) => flagIf (amendOk n d a) (castBallot (polity n) (amendSealed a) box) none
+
+def mkAmend : Verdict -> List CPoint -> List U256 -> Digest -> Option AmendBallot :=
+  fun (v : Verdict) (rg : List CPoint) (sg : List U256) (d : Digest) => option none (fun (t : Digest) => some (pair (mkBallot v t) (pair rg sg))) (amendTag d sg)
 
 -- The positions of a bag (S7 B3, Q4): Pos n has n values, the first
 -- position at each szS and a lift of each position of the tail. No

@@ -42,3 +42,4 @@ claims.lang
 units.lang
 trkit.lang
 transfer.lang
+govern.lang

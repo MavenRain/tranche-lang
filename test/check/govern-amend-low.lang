@@ -1,0 +1,11 @@
+-- An amendment below tAmend (S6 C3, Q-S6-8 (a)): covL has tAmend 1 and
+-- the yes count 0 is under it, so Gov keeps covL, and this law (that the
+-- ledger enacts covLZ) is refused.
+def covL : Covenant :=
+  makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmUnit CPoint) (pair 1u 2u) (fmUnit (Prod (Prod Claims Claims) Units)) (some 1)
+
+def covLZ : Covenant :=
+  makeCovenant (polity covL) (issuers covL) (keyOpenC covL) (covRows covL) (some 0)
+
+def lawLow : Path Covenant (Gov covL (fmCons CDecided (pair covLZ 0) (fmUnit CDecided))) covLZ :=
+  refl

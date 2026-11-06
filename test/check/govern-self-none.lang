@@ -1,0 +1,12 @@
+-- A self-constitution witness at covN (S6 C10, L16): covN has no policy,
+-- so its fate is impossible and AggOf of it is Empty. The witness
+-- (fmUnit CDecided, (unit, lawSelfN)) is refused: unit is not an Empty.
+def g : CPoint :=
+  pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u
+
+def covN : Covenant :=
+  makeCovenant (makePolity (fmCons Point (first g) (fmUnit Point)) 1 1 1 0u 0u) (fmCons CPoint g (fmUnit CPoint)) g (fmUnit (Prod (Prod Claims Claims) Units)) none
+
+def lawSelfN : Path Covenant (Gov covN (fmUnit CDecided)) covN := refl
+
+def selfN : IsSelfConstituting covN covN := pack (fmUnit CDecided) (pair unit lawSelfN)

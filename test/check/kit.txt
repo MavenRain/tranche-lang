@@ -105,3 +105,7 @@ partial-option-kit.lang
 partial-option-arg-kit.lang
 partial-zero-kit.lang
 partial-zero-word-kit.lang
+govern-used-key.lang
+govern-self-none.lang
+govern-amend-low.lang
+govern-l9-swapped.lang

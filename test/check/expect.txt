@@ -202,3 +202,7 @@ partial-option-kit.lang REFUSE_PARTIAL
 partial-option-arg-kit.lang REFUSE_PARTIAL
 partial-zero-kit.lang REFUSE_PARTIAL
 partial-zero-word-kit.lang REFUSE_PARTIAL
+govern-used-key.lang PATH_END
+govern-self-none.lang TYPE_MISMATCH
+govern-amend-low.lang PATH_END
+govern-l9-swapped.lang PATH_END

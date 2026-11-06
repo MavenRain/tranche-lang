@@ -2451,7 +2451,7 @@ static const Core *rule_rtable(Call *k) {
 /* The S5 transfer kit words (C9, B3-1, B3-3, B3-7): fixed signatures over
    a point, a word list, Units, a pair of two Ct, a statement ST (5 points,
    then 4 Ct), a proof (4 word lists) and the rTable rows. The rows are
-   inferred: the type must be List (Prod (Prod C C) Units) with C = Prod J S
+   inferred: the type must be FreeMon (Prod (Prod C C) Units) (Q-S6-12 (a)) with C = Prod J S
    (class_type), and CLASS is that C. The result is an Option of a word list,
    or of Flag for a verifier. */
 static const Core *rule_tranche(Call *k) {
@@ -2473,6 +2473,7 @@ static const Core *rule_tranche(Call *k) {
   Machine *m = c->m;
   uint32_t uf = find_family(m, "Units");
   uint32_t cf = find_family(m, "Ct");
+  uint32_t ff = find_family(m, "FreeMon");
   const Value *u = tyop(c, OP_U256, 0, NULL, NULL, NULL);
   const Value *point = tyop(c, OP_PROD, 2, u, u, NULL);
   const Value *words = tyop(c, OP_LIST, 1, u, NULL, NULL);
@@ -2488,8 +2489,8 @@ static const Core *rule_tranche(Call *k) {
   while (row < sizeof ROWS / sizeof ROWS[0] && ROWS[row].op != k->b->op) row++;
   if (row == sizeof ROWS / sizeof ROWS[0] || k->b->arity > 5u)
     return NULL;
-  if (units == NULL || ct == NULL)
-    return nul(FAIL(c, "TYPE_MISMATCH", "%s needs the domain families Units and Ct (S5 C9)", k->b->name));
+  if (units == NULL || ct == NULL || ff >= m->family_count)
+    return nul(FAIL(c, "TYPE_MISMATCH", "%s needs the domain families Units, Ct and FreeMon (S5 C9, Q-S6-12 (a))", k->b->name));
   shape[T_POINT] = point;
   shape[T_WORDS] = words;
   shape[T_UNITS] = units;
@@ -2504,17 +2505,17 @@ static const Core *rule_tranche(Call *k) {
       args[i] = infer(c, k->args[i], &type);
       if (args[i] == NULL)
         return NULL;
-      e = type != NULL && val_is(type, OP_LIST) && type->argc == 1u ? type->args[0] : NULL;
+      e = type != NULL && val_is(type, OP_FAMILY) && type->inst == ff && type->argc == 1u ? type->args[0] : NULL;
       shape[T_CLASS] = e != NULL && val_is(e, OP_PROD) && e->argc == 2u && val_is(e->args[0], OP_PROD) && e->args[0]->argc == 2u
                            ? e->args[0]->args[0]
                            : NULL;
       if (!class_type(m, shape[T_CLASS], &fj, &fs) ||
           !conv_values(m, c->level, type,
-                       tyop(c, OP_LIST, 1, tyop(c, OP_PROD, 2, tyop(c, OP_PROD, 2, shape[T_CLASS], shape[T_CLASS], NULL), units, NULL),
+                       val_make(m, OP_FAMILY, ff, 1, tyop(c, OP_PROD, 2, tyop(c, OP_PROD, 2, shape[T_CLASS], shape[T_CLASS], NULL), units, NULL),
                             NULL, NULL)))
         return nul(FAIL(c, "TYPE_MISMATCH",
-                        "%s needs the rTable rows List (Prod (Prod C C) Units) with C = Prod J S, J and S sums of "
-                        "constructors with no fields (S5 C9), found %s",
+                        "%s needs the rTable rows FreeMon (Prod (Prod C C) Units) with C = Prod J S, J and S sums of "
+                        "constructors with no fields (S5 C9, Q-S6-12 (a)), found %s",
                         k->b->name, show(c, type)));
     } else {
       args[i] = check(c, k->args[i], shape[ROWS[row].arg[i]]);

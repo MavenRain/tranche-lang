@@ -1,7 +1,7 @@
 -- transferVerify has no target form until S8 (tranche-lang S5 C9,
 -- B3-13): a run-time state gives REFUSE_LOWER (HOST-LIMIT, a host proof
 -- check). The Ct is ctOf g g, not a ctEnc, so no secret op comes first.
-def t0 : List (Prod (Prod Claims Claims) Units) := nil
+def t0 : Rows := fmUnit (Prod (Prod Claims Claims) Units)
 
 def g : CPoint :=
   pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u

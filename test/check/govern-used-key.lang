@@ -1,0 +1,67 @@
+-- A second cast with the key image of a cast ballot (S6 C4, L15): castAmend
+-- gives none, so a refl that the box holds 2 ballots is refused at the end site.
+-- The amend cast (S6 C4, L15, Q-S6-13 and Q-S6-14 (a)): the ring (p0, p1)
+-- of examples/zkcast.lang at poll 0. The members of the polity of cov are
+-- the x words of the ring points (tAmend 1, no rows, no policy).
+def g : CPoint :=
+  pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u
+
+def k0 : U256 := zkKey 0
+
+def k1 : U256 := zkKey 1
+
+def p0 : Option CPoint := ecMul g k0
+
+def p1 : Option CPoint := ecMul g k1
+
+def p2 : Option CPoint := ecMul g (zkKey 2)
+
+def ring : Option (List CPoint) :=
+  bind p0 (fun (a : CPoint) => bind p1 (fun (b : CPoint) => some (cons a (cons b nil))))
+
+-- outRing holds p2, and the x of p2 is not a member.
+def outRing : Option (List CPoint) :=
+  bind p0 (fun (a : CPoint) => bind p2 (fun (b : CPoint) => some (cons a (cons b nil))))
+
+def poll : Digest := 0u
+
+def cov : Option Covenant :=
+  bind p0 (fun (a : CPoint) => bind p1 (fun (b : CPoint) => some (makeCovenant (makePolity (fmCons Point (first a) (fmCons Point (first b) (fmUnit Point))) 1 1 1 0u 0u) (fmCons CPoint a (fmCons CPoint b (fmUnit CPoint))) a (fmUnit (Prod (Prod Claims Claims) Units)) none)))
+
+-- ballotOf ro k s v: the AmendBallot of v by the ring key k on the ring
+-- ro, signed on the digest s and sealed under the amendTag on poll.
+def ballotOf : Option (List CPoint) -> U256 -> Digest -> Verdict -> Option AmendBallot :=
+  fun (ro : Option (List CPoint)) (k : U256) (s : Digest) (v : Verdict) => bind ro (fun (rg : List CPoint) => bind (zkSign rg k s amendChoice) (fun (sg : List U256) => mkAmend v rg sg poll))
+
+-- castIn casts a ballot on poll into a box; boxSize counts the sealed ballots.
+def castIn : Option Box -> Option AmendBallot -> Option Box :=
+  fun (ob : Option Box) (oa : Option AmendBallot) => bind cov (fun (n : Covenant) => bind ob (fun (box : Box) => bind oa (fun (a : AmendBallot) => castAmend n poll a box)))
+
+def box0 : Option Box := some (fmUnit SealedBallot)
+
+def boxSize : Option Box -> Option Count :=
+  fun (ob : Option Box) => bind ob (fun (box : Box) => fmChain SealedBallot (Option Count) optNatIsSet (fun (n : Option Count) (b : SealedBallot) => bind n opSucc) (some 0) box)
+
+def y0 : Option AmendBallot := ballotOf ring k0 poll flagYes
+
+def n0 : Option AmendBallot := ballotOf ring k0 poll flagNo
+
+def y1 : Option AmendBallot := ballotOf ring k1 poll flagYes
+
+-- The L15 rows: good and both cast; twice casts n0 after y0 (the same key
+-- image); outsider signs on outRing; forged signs on 1u, not poll;
+-- wrongTag seals y0 under the tag 5u, not the amendTag.
+def good : Option Count := boxSize (castIn box0 y0)
+
+def both : Option Count := boxSize (castIn (castIn box0 y0) y1)
+
+def twice : Option Count := boxSize (castIn (castIn box0 y0) n0)
+
+def outsider : Option Count := boxSize (castIn box0 (ballotOf outRing k0 poll flagYes))
+
+def forged : Option Count := boxSize (castIn box0 (ballotOf ring k0 1u flagYes))
+
+def wrongTag : Option Count :=
+  boxSize (castIn box0 (bind ring (fun (rg : List CPoint) => bind (zkSign rg k0 poll amendChoice) (fun (sg : List U256) => some (pair (mkBallot flagYes 5u) (pair rg sg))))))
+
+def twiceTwo : Path (Option Count) twice (some 2) := refl

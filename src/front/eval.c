@@ -1772,7 +1772,7 @@ static int tk_class(const Value *v) {
   return val_is(v, OP_PAIR) && val_is(v->args[0], OP_CTOR) && val_is(v->args[1], OP_CTOR);
 }
 
-/* 1 when V is a closed list of words, or of rTable rows `pair (pair h k) u`. */
+/* 1 when V is a closed list of words. */
 static int tk_words(const Value *v) {
   while (val_is(v, OP_CONS)) {
     if (v->args[0]->kind != VAL_WORD)
@@ -1782,15 +1782,56 @@ static int tk_words(const Value *v) {
   return val_is(v, OP_NIL);
 }
 
-static int tk_rows(const Value *v) {
-  while (val_is(v, OP_CONS)) {
-    const Value *row = v->args[0];
+/* The rows of the closed Rows V in order into R (S6 C3, Q-S6-12 (a)): an
+   fmMul gives the rows of its left, then of its right, an fmEta one row
+   and an fmUnit none. The path constructors keep that order, so the read
+   is well defined on the quotient. 0 on another value, a path
+   constructor, a depth over TK_ROWS_DEPTH or more than TK_ROWS_MAX rows. */
+#define TK_ROWS_MAX (JR_C_MAX * JR_C_MAX)
+#define TK_ROWS_DEPTH (2u * TK_ROWS_MAX + 2u)
+
+typedef struct {
+  const Value *row[TK_ROWS_MAX];
+  uint32_t n;
+} TkRows;
+
+static int tk_flat(const Machine *m, TkRows *r, const Value *v, uint32_t depth) {
+  uint32_t p;
+  if (!val_is(v, OP_CTOR) || v->inst >= m->ctor_count || depth > TK_ROWS_DEPTH || m->ctors[v->inst].interval_count != 0u)
+    return 0;
+  p = m->families[m->ctors[v->inst].family].param_count;
+  if (v->argc != p + m->ctors[v->inst].field_count)
+    return 0;
+  switch (m->ctors[v->inst].field_count) {
+  case 0u:
+    return 1;
+  case 1u:
+    if (r->n == TK_ROWS_MAX)
+      return 0;
+    r->row[r->n] = v->args[p];
+    r->n++;
+    return 1;
+  case 2u:
+    return tk_flat(m, r, v->args[p], depth + 1u) && tk_flat(m, r, v->args[p + 1u], depth + 1u);
+  default:
+    return 0;
+  }
+}
+
+/* 1 when V is a closed Rows (tk_flat) of rTable rows `pair (pair h k) u`;
+   R holds the rows. */
+static int tk_rows(const Machine *m, TkRows *r, const Value *v) {
+  uint32_t i;
+  r->n = 0u;
+  if (!tk_flat(m, r, v, 0u))
+    return 0;
+  for (i = 0; i < r->n; i++) {
+    const Value *row = r->row[i];
     if (!val_is(row, OP_PAIR) || !val_is(row->args[0], OP_PAIR) || !tk_class(row->args[0]->args[0]) ||
         !tk_class(row->args[0]->args[1]) || !tk_units(row->args[1]))
       return 0;
-    v = v->args[1];
   }
-  return val_is(v, OP_NIL);
+  return 1;
 }
 
 /* The N parts of the right-nested pair V into PART. */
@@ -1905,18 +1946,18 @@ static uint32_t tk_class_index(const Machine *m, JrTable *t, uint32_t (*cls)[2],
    first-use order (h, then k), admit and cap from the rows, and *NM caps by
    jointr_caps. 0 on no row, a duplicate pair, more than JR_C_MAX classes or
    a cap out of the host caps. */
-static int tk_table(const Machine *m, JrTable *t, uint32_t (*cls)[2], uint32_t *nm, const Value *rows) {
+static int tk_table(const Machine *m, JrTable *t, uint32_t (*cls)[2], uint32_t *nm, const TkRows *rows) {
   uint64_t caps[JR_C_MAX * JR_C_MAX + 1u];
+  uint32_t i;
   memset(t, 0, sizeof *t);
-  while (val_is(rows, OP_CONS)) {
-    const Value *row = rows->args[0];
+  for (i = 0; i < rows->n; i++) {
+    const Value *row = rows->row[i];
     uint32_t h = tk_class_index(m, t, cls, row->args[0]->args[0], 1);
     uint32_t k = h < t->c ? tk_class_index(m, t, cls, row->args[0]->args[1], 1) : t->c;
     if (k >= t->c || t->admit[h][k] != 0u)
       return 0;
     t->admit[h][k] = 1u;
     t->cap[h][k] = row->args[1]->args[0]->nat;
-    rows = rows->args[1];
   }
   return t->c > 0u && jointr_caps(caps, nm, t);
 }
@@ -1925,6 +1966,7 @@ static int tk_table(const Machine *m, JrTable *t, uint32_t (*cls)[2], uint32_t *
    class A of H. */
 static const Value *tk_jr_send(Machine *m, const Value *const *a, uint32_t n) {
   JrTable t;
+  TkRows rows;
   JrStatement js;
   TrStatement ts;
   uint32_t cls[JR_C_MAX][2];
@@ -1934,9 +1976,9 @@ static const Value *tk_jr_send(Machine *m, const Value *const *a, uint32_t n) {
   U256 *w;
   uint32_t nm = 0;
   uint32_t i;
-  if (!tk_rows(a[0]) || !tk_class(a[1]) || !tk_st(part, a[2]) || !tk_units(a[3]) || !tk_words(a[4]))
+  if (!tk_rows(m, &rows, a[0]) || !tk_class(a[1]) || !tk_st(part, a[2]) || !tk_units(a[3]) || !tk_words(a[4]))
     return opaque(m, OP_JR_SEND, a, n);
-  if (!tk_table(m, &t, cls, &nm, a[0]) || !tk_statement(&js, &ts, part) || !tk_get(sec, a[4], 3u))
+  if (!tk_table(m, &t, cls, &nm, &rows) || !tk_statement(&js, &ts, part) || !tk_get(sec, a[4], 3u))
     return constant(m, OP_NONE);
   i = tk_class_index(m, &t, cls, a[1], 0);
   m1 = arena_alloc(m->arena, sizeof *m1);
@@ -1954,6 +1996,7 @@ static const Value *tk_jr_send(Machine *m, const Value *const *a, uint32_t n) {
    the class B of K. */
 static const Value *tk_jr_select(Machine *m, const Value *const *a, uint32_t n) {
   JrTable t;
+  TkRows rows;
   JrStatement js;
   TrStatement ts;
   uint32_t cls[JR_C_MAX][2];
@@ -1965,9 +2008,9 @@ static const Value *tk_jr_select(Machine *m, const Value *const *a, uint32_t n) 
   U256 *w2;
   uint32_t nm = 0;
   uint32_t b;
-  if (!tk_rows(a[0]) || !tk_class(a[1]) || !tk_st(part, a[2]) || !tk_words(a[3]) || !tk_words(a[4]))
+  if (!tk_rows(m, &rows, a[0]) || !tk_class(a[1]) || !tk_st(part, a[2]) || !tk_words(a[3]) || !tk_words(a[4]))
     return opaque(m, OP_JR_SELECT, a, n);
-  if (!tk_table(m, &t, cls, &nm, a[0]) || !tk_statement(&js, &ts, part) || !tk_get(sec, a[4], 3u))
+  if (!tk_table(m, &t, cls, &nm, &rows) || !tk_statement(&js, &ts, part) || !tk_get(sec, a[4], 3u))
     return constant(m, OP_NONE);
   b = tk_class_index(m, &t, cls, a[1], 0);
   m1 = arena_alloc(m->arena, sizeof *m1);
@@ -1988,6 +2031,7 @@ static const Value *tk_jr_select(Machine *m, const Value *const *a, uint32_t n) 
    nil when the gate is closed (JR_CLOSED). */
 static const Value *tk_jr_open(Machine *m, const Value *const *a, uint32_t n) {
   JrTable t;
+  TkRows rows;
   JrStatement js;
   TrStatement ts;
   uint32_t cls[JR_C_MAX][2];
@@ -2001,9 +2045,9 @@ static const Value *tk_jr_open(Machine *m, const Value *const *a, uint32_t n) {
   U256 w3[TRW_M3_LEN];
   uint32_t nm = 0;
   JrResult r;
-  if (!tk_rows(a[0]) || !tk_st(part, a[1]) || !tk_words(a[2]) || !tk_words(a[3]) || !tk_words(a[4]))
+  if (!tk_rows(m, &rows, a[0]) || !tk_st(part, a[1]) || !tk_words(a[2]) || !tk_words(a[3]) || !tk_words(a[4]))
     return opaque(m, OP_JR_OPEN, a, n);
-  if (!tk_table(m, &t, cls, &nm, a[0]) || !tk_statement(&js, &ts, part) || !tk_get(sec, a[4], 1u))
+  if (!tk_table(m, &t, cls, &nm, &rows) || !tk_statement(&js, &ts, part) || !tk_get(sec, a[4], 1u))
     return constant(m, OP_NONE);
   m1 = arena_alloc(m->arena, sizeof *m1);
   m2 = arena_alloc(m->arena, sizeof *m2);
@@ -2054,6 +2098,7 @@ static const Value *tk_transfer_prove(Machine *m, const Value *const *a, uint32_
    host refusal give none. */
 static const Value *tk_transfer_verify(Machine *m, const Value *const *a, uint32_t n) {
   JrTable t;
+  TkRows rows;
   JrStatement js;
   TrStatement ts;
   uint32_t cls[JR_C_MAX][2];
@@ -2070,9 +2115,9 @@ static const Value *tk_transfer_verify(Machine *m, const Value *const *a, uint32
   uint32_t nm = 0;
   TrResult tr;
   JrResult jr;
-  if (!tk_rows(a[0]) || !tk_st(part, a[1]) || !tk_proof(pp, a[2]))
+  if (!tk_rows(m, &rows, a[0]) || !tk_st(part, a[1]) || !tk_proof(pp, a[2]))
     return opaque(m, OP_TRANSFER_VERIFY, a, n);
-  if (!tk_table(m, &t, cls, &nm, a[0]) || !tk_statement(&js, &ts, part))
+  if (!tk_table(m, &t, cls, &nm, &rows) || !tk_statement(&js, &ts, part))
     return constant(m, OP_NONE);
   pf = arena_alloc(m->arena, sizeof *pf);
   m1 = arena_alloc(m->arena, sizeof *m1);

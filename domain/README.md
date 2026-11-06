@@ -57,6 +57,7 @@ of each section gives its rule or ruling.
 | The encrypted values | the sealed family `Enc`, `encBind`, `encMap`, `encOp2`, the law defs `decrypt` and `observe` |
 | Quorum and proofs | `Quorum`, the law def `open`, `ZKProof`, the sealed family `Transcript`, the law def `verified` |
 | Part D, the DAO | `Point`, `Count`, `verdictNo`, `isSetProd`, `encEtaOf`, `encIsSet`, `Polity`, `makePolity`, `members`, `tAppend`, `tAmend`, `tOpen`, `keyOpen`, `keyAppend`, `polityIsSet`, `Proposal`, `Bit`, `SealedBallot`, `mkBallot`, `ballotVote`, `linkTag`, `Box`, `tagUsed`, `castBallot`, `tallyBox`, `countVotes`, `Decided`, `decideYes`, `enact`, `stepD`, `amendAll` |
+| Part G, the polity (S6) | `Rows`, `rowsOf`, `D`, `covPolicy`, `covIsSet`, `Kind`, `W`, `wApply`, `wAll`, `wRent`, `wZero`, `policyOf`, `policyKnown`, `Fate`, `fateOf`, `CDecided`, `decideC`, `stepC`, `amendC`, `Gov`, `GovPi`, `AggOf`, `IsSelfConstituting`, the issue digests `claimsWord`, `rowsDigest`, `polityDigest`, `policyWord`, `covDigest`, `ledgerDigest`, `tagIssue`, `issDigest` and `issue`, the amend ballot `AmendBallot`, `amendSealed`, `amendRing`, `amendSig`, `amendChoice`, `KeyTag`, `keyNone`, `keyStep`, `keyImage`, `amendTag`, `isMemberKey`, `memberRing`, `amendOk`, `castAmend`, `mkAmend` |
 | Positions, words and orbits | `Pos`, `Word`, `sizePred`, `consP`, `swapFront`, `actW`, `ChoiceBag`, `OrbitN` |
 | The charter | `Charter` (an inductive-inductive family) |
 | Equivalences | `isContr`, `fiber`, `isEquiv`, `Equiv`, `idEquiv`, `isoCap`, `isoPath`, `isoToEquiv`, `ua`, `uaArrow` |
@@ -79,6 +80,16 @@ of each section gives its rule or ruling.
 - `examples/append.lang` holds the laws L10 and L11 (a good and a bad
   Auth under `keyAppend`), and `examples/outlog.lang` is the run row of
   the host append (O20).
+- `examples/govern.lang` uses Part G in a guest program: the amend
+  ballot, `Gov`, `GovPi`, the fate, IsSelfConstituting and the G5 rows
+  (Q-S6-8 (a), Q-S6-18 (a)). The rows `test/check/govern-*.lang` are
+  its refusal rows.
+- `examples/trkit.lang` holds the issue rows `isGood`, `isBadZ`,
+  `isReplay` and `isNoKey` (Q-S6-17 (a)). `issue` checks a threshold
+  signature of `keyAppend` of the Covenant that `Gov` gives, on
+  `issDigest` of the ledger, the supply and the issue (Q-S6-4 (a),
+  Q-S6-16 (a)). `ledgerDigest` chains `covDigest` of each Covenant and
+  the Count of each row in ledger order (Q-S6-15 (c)).
 
 ## How to change the domain
 

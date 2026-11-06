@@ -1,0 +1,4 @@
+-- L14 with the order swapped (S6 C11, F8): amendC folds the left factor
+-- first, so this law is refused.
+def l9CSwapped : (ps : FreeMon CDecided) -> (qs : FreeMon CDecided) -> (n : Covenant) -> Path Covenant (amendC n (fmMul CDecided ps qs)) (amendC (amendC n qs) ps) :=
+  fun (ps : FreeMon CDecided) (qs : FreeMon CDecided) (n : Covenant) => refl

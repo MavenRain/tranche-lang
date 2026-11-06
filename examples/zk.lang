@@ -159,10 +159,10 @@ def attOffCom : Option Flag :=
 -- keyOpenC of each is (0, 0), the point at infinity, as keyOpen is 0u
 -- (Q-S5-6 (a)).
 def con2 : Option Covenant :=
-  bind p0 (fun (a : CPoint) => bind p1 (fun (b : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmCons CPoint a (fmCons CPoint b (fmUnit CPoint))) (pair 0u 0u) nil)))
+  bind p0 (fun (a : CPoint) => bind p1 (fun (b : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmCons CPoint a (fmCons CPoint b (fmUnit CPoint))) (pair 0u 0u) (fmUnit (Prod (Prod Claims Claims) Units)) none)))
 
 def con1 : Option Covenant :=
-  bind p0 (fun (a : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmCons CPoint a (fmUnit CPoint)) (pair 0u 0u) nil))
+  bind p0 (fun (a : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmCons CPoint a (fmUnit CPoint)) (pair 0u 0u) (fmUnit (Prod (Prod Claims Claims) Units)) none))
 
 def idYes : Option (Except Identity) :=
   bind con2 (fun (n : Covenant) => bind ring2 (fun (rg : List CPoint) => bind p2 (fun (k : CPoint) => bind comH (fun (c : CPoint) => bind att2 (fun (s : List U256) => some (attested n (makeIdentity k c rg s)))))))
