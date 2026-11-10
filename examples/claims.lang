@@ -42,7 +42,7 @@ def attOk : Option Flag :=
   bind ring2 (fun (rg : List (Prod U256 U256)) => bind p2 (fun (k : Prod U256 U256) => bind com (fun (c : Prod U256 U256) => bind att (fun (s : List U256) => attestVerify rg k c s))))
 
 def con2 : Option Covenant :=
-  bind p0 (fun (a : CPoint) => bind p1 (fun (b : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmCons CPoint a (fmCons CPoint b (fmUnit CPoint))) (pair 0u 0u) tableRows none)))
+  bind p0 (fun (a : CPoint) => bind p1 (fun (b : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmCons CPoint a (fmCons CPoint b (fmUnit CPoint))) (pair 0u 0u) tableRows none (payCfgOf 0u 0u))))
 
 def holder : Option (Except Identity) :=
   bind con2 (fun (n : Covenant) => bind ring2 (fun (rg : List CPoint) => bind p2 (fun (k : CPoint) => bind com (fun (c : CPoint) => bind att (fun (s : List U256) => some (attested n (makeIdentity k c rg s)))))))

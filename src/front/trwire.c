@@ -292,6 +292,31 @@ int trw_proof_get(TransferProof *pf, const U256 *in, uint32_t len) {
   return done(&cur);
 }
 
+int wd_proof_put(U256 *out, uint32_t len, const WithdrawProof *pf) {
+  Cur cur = put_cur(out, len);
+  uint32_t i;
+  put_cipher(&cur, &pf->rest);
+  put_dleq(&cur, &pf->rest_key);
+  for (i = 0; i < WD_BITS; i++) put_cipher(&cur, &pf->bit[i]);
+  for (i = 0; i < WD_BITS; i++) put_or(&cur, &pf->proof[i]);
+  put_dleq(&cur, &pf->sum);
+  return done(&cur);
+}
+
+int wd_proof_get(WithdrawProof *pf, const U256 *in, uint32_t len) {
+  Cur cur = get_cur(in, len);
+  uint32_t i;
+  memset(pf, 0, sizeof *pf);
+  if (len != WD_PROOF_LEN)
+    return 0;
+  get_cipher(&cur, &pf->rest);
+  get_dleq(&cur, &pf->rest_key);
+  for (i = 0; i < WD_BITS; i++) get_cipher(&cur, &pf->bit[i]);
+  for (i = 0; i < WD_BITS; i++) get_or(&cur, &pf->proof[i]);
+  get_dleq(&cur, &pf->sum);
+  return done(&cur);
+}
+
 static void absorb(U256 *acc, const GroupPoint *p) {
   U256 x;
   U256 y;

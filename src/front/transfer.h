@@ -86,4 +86,27 @@ TrResult transfer_build(TransferProof *out, const TrStatement *st, uint64_t q, c
    TR_BAD_PROOF when a check fails. */
 TrResult transfer_verify(const TransferProof *proof, const TrStatement *st);
 
+/* The bits of a U256: the most bits that tr_range_build and tr_range_check
+   take. */
+#define TR_N_MAX 256u
+
+/* The n-bit core of the range proof (tranche-lang S7 C5, Q-S7-10 (a)), for
+   1 <= N <= TR_N_MAX: BIT[i] = Enc(bit i of V; s_i) under PK with s_i =
+   tr_nonce(BASE, i), PROOF[i] the bit proof of BIT[i] in the slot i under
+   CTX, and SUM the proof that CT - sum 2^i BIT[i] encrypts 0 with the nonce
+   R - sum 2^i s_i. tr_range_build takes the low N bits of V, with no range
+   check. transfer_range_prove and transfer_range_verify are the N = TR_BITS
+   forms. TR_REFUSED when N is 0 or above TR_N_MAX, or (check) when PK or CT
+   is off the curve. */
+TrResult tr_range_build(ElgCipher *bit, SigOr *proof, SigDleq *sum, uint32_t n, const GroupPoint *pk, const ElgCipher *ct, const U256 *v, const U256 *r, const U256 *base, const U256 *ctx);
+TrResult tr_range_check(const ElgCipher *bit, const SigOr *proof, const SigDleq *sum, uint32_t n, const GroupPoint *pk, const ElgCipher *ct, const U256 *ctx);
+
+/* The helpers of front/transfer.c that front/withdraw.c uses. */
+void tr_nonce(U256 *out, const U256 *base, uint64_t i);                  /* blsag_reduce(thr_hash(BASE, I)) */
+void tr_mul_add(U256 *out, const U256 *a, const U256 *b, const U256 *c); /* A B + C mod n */
+void tr_sub_mod(U256 *out, const U256 *a, const U256 *b);                /* A - B mod n */
+void tr_cipher_sub(ElgCipher *out, const ElgCipher *a, const ElgCipher *b);
+int tr_cipher_on_curve(const ElgCipher *ct);
+TrResult tr_from_sig(SigResult r);
+
 #endif

@@ -394,10 +394,27 @@ def cpointIsSet : isSet CPoint := isSetProd U256 U256 u256IsSet u256IsSet
 -- 5th argument, and covPolicy gives it.
 def D : Type 0 := Nat
 
-def Covenant : Type 0 := Prod Polity (Prod (FreeMon CPoint) (Prod CPoint (Prod Rows (Option D))))
+-- The pay config (S7 C1, Q-S7-1 (a) and Q-S7-7 (a)), the 6th part of a
+-- Covenant: keyPay is the key of the pay committee (payOk reads it, C7)
+-- and payAsset is the digest of the paid asset (withdrawOut puts it in each
+-- Instruction, C6). A family has no isSet word, so PayCfg is a Prod and
+-- payCfgIsSet has the cpointIsSet form. makeCovenant takes it as its 6th
+-- argument, and covPay gives it.
+def PayCfg : Type 0 := Prod Point Digest
 
-def makeCovenant : Polity -> FreeMon CPoint -> CPoint -> Rows -> Option D -> Covenant :=
-  fun (s : Polity) (m : FreeMon CPoint) (k : CPoint) (t : Rows) (d : Option D) => pair s (pair m (pair k (pair t d)))
+def payCfgOf : Point -> Digest -> PayCfg := fun (k : Point) (a : Digest) => pair k a
+
+def keyPay : PayCfg -> Point := fun (y : PayCfg) => first y
+
+def payAsset : PayCfg -> Digest := fun (y : PayCfg) => second y
+
+def payCfgIsSet : isSet PayCfg := isSetProd U256 U256 u256IsSet u256IsSet
+
+def Covenant : Type 0 :=
+  Prod Polity (Prod (FreeMon CPoint) (Prod CPoint (Prod Rows (Prod (Option D) PayCfg))))
+
+def makeCovenant : Polity -> FreeMon CPoint -> CPoint -> Rows -> Option D -> PayCfg -> Covenant :=
+  fun (s : Polity) (m : FreeMon CPoint) (k : CPoint) (t : Rows) (d : Option D) (y : PayCfg) => pair s (pair m (pair k (pair t (pair d y))))
 
 def polity : Covenant -> Polity := fun (n : Covenant) => first n
 
@@ -407,7 +424,11 @@ def keyOpenC : Covenant -> CPoint := fun (n : Covenant) => first (second (second
 
 def covRows : Covenant -> Rows := fun (n : Covenant) => first (second (second (second n)))
 
-def covPolicy : Covenant -> Option D := fun (n : Covenant) => second (second (second (second n)))
+def covPolicy : Covenant -> Option D :=
+  fun (n : Covenant) => first (second (second (second (second n))))
+
+def covPay : Covenant -> PayCfg :=
+  fun (n : Covenant) => second (second (second (second (second n))))
 
 -- The kinds of inflow and the policy W (S6 C2, Q-S6-2, Q-S6-9 and Q-S6-11
 -- (a)). A W holds a map Kind -> U256 -> U256, and wApply reads it through
@@ -452,7 +473,7 @@ def fateOf : Covenant -> Fate :=
 -- order (fmChain into the set Covenant, covIsSet). The cairn Proposal,
 -- stepD and amendAll stay.
 def covIsSet : isSet Covenant :=
-  isSetProd Polity (Prod (FreeMon CPoint) (Prod CPoint (Prod Rows (Option D)))) polityIsSet (isSetProd (FreeMon CPoint) (Prod CPoint (Prod Rows (Option D))) (fmIsSet CPoint) (isSetProd CPoint (Prod Rows (Option D)) cpointIsSet (isSetProd Rows (Option D) (fmIsSet (Prod (Prod Claims Claims) Units)) optNatIsSet)))
+  isSetProd Polity (Prod (FreeMon CPoint) (Prod CPoint (Prod Rows (Prod (Option D) PayCfg)))) polityIsSet (isSetProd (FreeMon CPoint) (Prod CPoint (Prod Rows (Prod (Option D) PayCfg))) (fmIsSet CPoint) (isSetProd CPoint (Prod Rows (Prod (Option D) PayCfg)) cpointIsSet (isSetProd Rows (Prod (Option D) PayCfg) (fmIsSet (Prod (Prod Claims Claims) Units)) (isSetProd (Option D) PayCfg optNatIsSet payCfgIsSet))))
 
 def CDecided : Type 0 := Prod Covenant Count
 
@@ -581,6 +602,62 @@ def supply : Measure -> Units := fun (s : Measure) => first (second s)
 
 def distributed : Measure -> U256 := fun (s : Measure) => second (second s)
 
+-- The inflow and the claim (S7 C2, PLAN 4.4 and O8, Q-S7-8 (a)). An
+-- Inflow is a ledger entry that the polity authorizes. pBits (P = 32),
+-- balBits (Bbal = 160) and decBits (B = 32, the decryptIn range of N7)
+-- are the static ranges of O8: a claim balance is in units of 2^-P of the
+-- asset and is below 2^Bbal. twoP is 2^P and limA is 2^(Bbal - P), the
+-- bound of distributed. claim a s is the public credit u for each unit:
+-- some 0u when the supply is 0, else mulDiv a twoP supply (none when it
+-- does not fit; distribute (C3) checks distributed + a < limA first).
+-- pbOk is the rule B <= P < Bbal of O8, and pbRule is its path, so the
+-- checker refuses this file when the rule fails.
+family Inflow := inflowOf (kind : Kind) (amount : U256)
+
+def pBits : Nat := 32
+
+def balBits : Nat := 160
+
+def decBits : Nat := 32
+
+def twoP : U256 := 4294967296u
+
+def limA : U256 := 0x100000000000000000000000000000000u
+
+def unitsU : Units -> U256 :=
+  fun (u : Units) => elim (fun (v : Units) => U256) (fun (c : Nat) => toU256 c) u
+
+def claim : U256 -> Measure -> Option U256 :=
+  fun (a : U256) (s : Measure) => option (some 0u) (fun (d : NonZero U256) => mulDiv a twoP d) (nonZero (unitsU (supply s)))
+
+def pbOk : Flag := flagIf (natLe decBits pBits) (flagIf (natLe balBits pBits) flagNo flagYes) flagNo
+
+def pbRule : Path Flag pbOk flagYes := fun (i : I) => flagYes
+
+-- distribute (S7 C3, PLAN 4.4 distribute, O8, Q-S7-2): under impossible,
+-- and under debreu d at supply 0, it credits nothing, and the treasury
+-- keeps all of the inflow, a * 2^P (distRet). Else A = W k a, and the
+-- lifetime total distributed + A must stay below 2^(Bbal - P) (limA)
+-- before u and before any balance: equality or an overflow gives full.
+-- Each bal h gets mu(h) * u by ctScale and ctAdd (distBal, the trBag
+-- Flag form), and a ct op none gives outOfRange. The step gives the new
+-- Measure and (a - A) * 2^P + res A, with res A = A * 2^P - u * supply
+-- (distEnd). distribute opens nothing.
+def distBal : U256 -> FreeMon Holding -> Prod Flag (FreeMon Holding) :=
+  fun (u : U256) (m : FreeMon Holding) => fmRun Holding (Prod Flag (FreeMon Holding)) (isSetProd Flag (FreeMon Holding) flagIsSet (fmIsSet Holding)) (fun (h : Holding) (b : Prod Flag (FreeMon Holding)) => option (pair flagNo (second b)) (fun (c : Ct) => pair (first b) (fmCons Holding (pair (holdId h) (pair (holdOwn h) (pair (holdPub h) c))) (second b))) (bind (ctScale (holdOwn h) u) (fun (v : Ct) => ctAdd (holdBal h) v))) (pair flagYes (fmUnit Holding)) m
+
+def distRet : Measure -> Inflow -> Except (Prod Measure U256) :=
+  fun (s : Measure) (i : Inflow) => orFail (Prod Measure U256) full (bind (u256Mul (amount i) twoP) (fun (t : U256) => some (pair s t)))
+
+def distEnd : Measure -> U256 -> U256 -> U256 -> U256 -> Prod Flag (FreeMon Holding) -> Except (Prod Measure U256) :=
+  fun (s : Measure) (n : U256) (a : U256) (x : U256) (u : U256) (b : Prod Flag (FreeMon Holding)) => flagIf (first b) (orFail (Prod Measure U256) full (bind (u256Sub a x) (fun (k : U256) => bind (u256Mul k twoP) (fun (p : U256) => bind (u256Mul x twoP) (fun (q : U256) => bind (u256Mul u (unitsU (supply s))) (fun (r : U256) => bind (u256Sub q r) (fun (z : U256) => bind (u256Add p z) (fun (t : U256) => some (pair (pair (second b) (pair (supply s) n)) t))))))))) (exFail (Prod Measure U256) outOfRange)
+
+def distOn : Measure -> U256 -> U256 -> Except (Prod Measure U256) :=
+  fun (s : Measure) (a : U256) (x : U256) => option (exFail (Prod Measure U256) full) (fun (n : U256) => flagIf (u256Le limA n) (exFail (Prod Measure U256) full) (option (exFail (Prod Measure U256) full) (fun (u : U256) => distEnd s n a x u (distBal u (holders s))) (claim x s))) (u256Add (distributed s) x)
+
+def distribute : Fate -> Measure -> Inflow -> Except (Prod Measure U256) :=
+  fun (f : Fate) (s : Measure) (i : Inflow) => elim (fun (y : Fate) => Except (Prod Measure U256)) (distRet s i) (fun (d : D) => option (distRet s i) (fun (z : NonZero U256) => distOn s (amount i) (wApply (policyOf d) (kind i) (amount i))) (nonZero (unitsU (supply s)))) f
+
 -- holderAt s p (Q-S5-9 (a)) is the bag of the holdings of s whose key is
 -- p, by cpointEq of idKey. The bag is empty when no holding has the key.
 -- FreeMon Holding is a set (fmIsSet), so fmChain can fold into it.
@@ -604,6 +681,17 @@ def holderAt : Measure -> CPoint -> FreeMon Holding :=
 -- (badProof), then the update.
 def exBind : (A : Type 0) -> (B : Type 0) -> Except A -> (A -> Except B) -> Except B :=
   fun (A : Type 0) (B : Type 0) (e : Except A) (k : A -> Except B) => elim (fun (u : Except A) => Except B) (fun (a : A) => k a) (fun (f : Fail) => exFail B f) e
+
+-- treasury (S7 C4, PLAN 4.4 Treasury, Q-S7-2, N3, N8): the fold of
+-- distribute over the inflows in the ledger order, from the Measure s
+-- and 0u. Each step adds its U256 (none gives full), in units of 2^-P
+-- (O8). The kit fold is a right fold, so the fold makes the chain of
+-- steps (tyStep), and the step of the head inflow runs first.
+def tyStep : Fate -> Inflow -> (Prod Measure U256 -> Except (Prod Measure U256)) -> Prod Measure U256 -> Except (Prod Measure U256) :=
+  fun (f : Fate) (i : Inflow) (k : Prod Measure U256 -> Except (Prod Measure U256)) (p : Prod Measure U256) => exBind (Prod Measure U256) (Prod Measure U256) (distribute f (first p) i) (fun (q : Prod Measure U256) => exBind (Prod Measure U256) (Prod Measure U256) (orFail (Prod Measure U256) full (bind (u256Add (second p) (second q)) (fun (t : U256) => some (pair (first q) t)))) k)
+
+def treasury : Fate -> Measure -> List Inflow -> Except (Prod Measure U256) :=
+  fun (f : Fate) (s : Measure) (l : List Inflow) => fold (tyStep f) (fun (p : Prod Measure U256) => exEta (Prod Measure U256) p) l (pair s 0u)
 
 def TrSt : Type 0 :=
   Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod Ct (Prod Ct (Prod Ct Ct)))))))
@@ -677,6 +765,103 @@ def trCheck : Covenant -> Measure -> Transfer -> TrSt -> Except Measure :=
 def transfer : Covenant -> Measure -> Transfer -> Except Measure :=
   fun (n : Covenant) (s : Measure) (t : Transfer) => exBind Identity Measure (attested n (trFrom t)) (fun (f : Identity) => exBind Identity Measure (attested n (trTo t)) (fun (k : Identity) => exBind Ct Measure (trOwn s (idKey f)) (fun (o : Ct) => trCheck n s t (trSt n t o))))
 
+-- The withdrawOut (S7 C6, PLAN 4.4). A Withdraw is (id, w, proof, rx, z,
+-- pos): the holder of id takes the public amount w out of the bal Ct of its
+-- holding at the op position pos. The order of the checks (Q-S7-12 (a) and
+-- Q-S7-13 (a)): w < limA (2^(Bbal - P)), else outOfRange; attested (the
+-- transfer form); a holding with idKey id, else badProof; the kernel word
+-- withdrawVerify on the bal of that holding, else badProof; the Schnorr
+-- signature of idKey id on (wdDigest, wdProofDigest), else badSig. The new
+-- bal is REST (Q-S7-11 (c)): wdRest reads the first 4 words of the proof
+-- (c1.x, c1.y, c2.x, c2.y, the wd_proof_put order) and gives none for a
+-- shorter list. withdrawVerify checks that bal - Enc(w 2^P; 1) - REST
+-- decrypts to 0 and that REST is in [0, 2^160), so REST is the remaining
+-- balance. The holding keeps id, own and pub. The Instruction pays w of the
+-- payAsset of the covenant to the x of idKey id, at pos.
+def tagWithdraw : Digest := 0x7472616e6368652d7769746864726177u
+
+def WithdrawProof : Type 0 := List U256
+
+def Withdraw : Type 0 :=
+  Prod Identity (Prod U256 (Prod WithdrawProof (Prod U256 (Prod U256 OpPos))))
+
+def makeWithdraw : Identity -> U256 -> WithdrawProof -> U256 -> U256 -> OpPos -> Withdraw :=
+  fun (f : Identity) (w : U256) (p : WithdrawProof) (rx : U256) (z : U256) (k : OpPos) => pair f (pair w (pair p (pair rx (pair z k))))
+
+def wdId : Withdraw -> Identity := fun (d : Withdraw) => first d
+
+def wdW : Withdraw -> U256 := fun (d : Withdraw) => first (second d)
+
+def wdProof : Withdraw -> WithdrawProof := fun (d : Withdraw) => first (second (second d))
+
+def wdRx : Withdraw -> U256 := fun (d : Withdraw) => first (second (second (second d)))
+
+def wdZ : Withdraw -> U256 := fun (d : Withdraw) => first (second (second (second (second d))))
+
+def wdPos : Withdraw -> OpPos := fun (d : Withdraw) => second (second (second (second (second d))))
+
+family Instruction := instructionOf (ixPayee : Point) (ixAsset : Digest) (ixAmount : U256) (ixPos : OpPos)
+
+def wdDigest : CPoint -> Ct -> U256 -> OpPos -> Digest -> U256 :=
+  fun (k : CPoint) (c : Ct) (w : U256) (q : OpPos) (a : Digest) => hash (hash (hash (ctWords (cpWords tagWithdraw k) c) w) (toU256 q)) a
+
+def wdProofDigest : WithdrawProof -> U256 := fun (p : WithdrawProof) => wordsDigest 0u p
+
+def WdQuad : Type 0 := Prod (Option U256) (Prod (Option U256) (Prod (Option U256) (Option U256)))
+
+def wdQuadNone : WdQuad := pair none (pair none (pair none none))
+
+def wdShift : U256 -> WdQuad -> WdQuad :=
+  fun (w : U256) (b : WdQuad) => pair (some w) (pair (first b) (pair (first (second b)) (first (second (second b)))))
+
+def wdCt : WdQuad -> Option Ct :=
+  fun (b : WdQuad) => bind (first b) (fun (xa : U256) => bind (first (second b)) (fun (ya : U256) => bind (first (second (second b))) (fun (xb : U256) => bind (second (second (second b))) (fun (yb : U256) => some (ctOf (pair xa ya) (pair xb yb))))))
+
+def wdRest : WithdrawProof -> Option Ct :=
+  fun (p : WithdrawProof) => wdCt (fold wdShift wdQuadNone p)
+
+def wdBal : Measure -> CPoint -> Except Ct :=
+  fun (s : Measure) (p : CPoint) => trOwnOf (fmChain Holding (Prod Flag (Prod CPoint CPoint)) (isSetProd Flag (Prod CPoint CPoint) flagIsSet (isSetProd CPoint CPoint cpointIsSet cpointIsSet)) (fun (b : Prod Flag (Prod CPoint CPoint)) (h : Holding) => flagIf (cpointEq (idKey (holdId h)) p) (pair flagYes (pair (ctC1 (holdBal h)) (ctC2 (holdBal h)))) b) (pair flagNo (pair (pair 0u 0u) (pair 0u 0u))) (holders s))
+
+def wdHold : CPoint -> Ct -> Holding -> Holding :=
+  fun (k : CPoint) (r : Ct) (h : Holding) => flagIf (cpointEq (idKey (holdId h)) k) (pair (holdId h) (pair (holdOwn h) (pair (holdPub h) r))) h
+
+def wdEnd : Covenant -> Measure -> Withdraw -> Identity -> Ct -> Except (Prod Measure Instruction) :=
+  fun (n : Covenant) (s : Measure) (d : Withdraw) (f : Identity) (r : Ct) => exBind Measure (Prod Measure Instruction) (makeMeasure (fmMap Holding Holding (wdHold (idKey f) r) (holders s)) (supply s) (distributed s)) (fun (m : Measure) => exEta (Prod Measure Instruction) (pair m (instructionOf (first (idKey f)) (payAsset (covPay n)) (wdW d) (wdPos d))))
+
+def wdCheck : Covenant -> Measure -> Withdraw -> Identity -> Ct -> Except (Prod Measure Instruction) :=
+  fun (n : Covenant) (s : Measure) (d : Withdraw) (f : Identity) (c : Ct) => option (exFail (Prod Measure Instruction) badProof) (fun (v : Flag) => flagIf v (flagIf (schnorrOk (first (idKey f)) (wdRx d) (wdZ d) (wdDigest (idKey f) c (wdW d) (wdPos d) (payAsset (covPay n))) (wdProofDigest (wdProof d))) (option (exFail (Prod Measure Instruction) badProof) (wdEnd n s d f) (wdRest (wdProof d))) (exFail (Prod Measure Instruction) badSig)) (exFail (Prod Measure Instruction) badProof)) (withdrawVerify (idKey f) c (wdW d) (wdProof d))
+
+def withdrawOut : Covenant -> Measure -> Withdraw -> Except (Prod Measure Instruction) :=
+  fun (n : Covenant) (s : Measure) (d : Withdraw) => flagIf (u256Le limA (wdW d)) (exFail (Prod Measure Instruction) outOfRange) (exBind Identity (Prod Measure Instruction) (attested n (wdId d)) (fun (f : Identity) => exBind Ct (Prod Measure Instruction) (wdBal s (idKey f)) (wdCheck n s d f)))
+
+-- The pay log (S7 C7, PLAN 4.4). A PayAuth is a threshold Schnorr
+-- signature (R.x, z) of the keyPay committee of the covenant on the message
+-- (ixHead log, ixDigest p), so the signature binds the position. ixDigest p
+-- is the digest of tagPay, the payee, the asset, the amount and the op
+-- position. ixEntries log is the record of the digests, and ixHead log is
+-- its head. paySnoc puts p at the end of log only when payOk holds and
+-- verify does not find ixDigest p in the record (valid once), else it gives
+-- none.
+def tagPay : Digest := 0x7472616e6368652d706179u
+
+family PayAuth := payAuthOf (payR : U256) (payZ : U256)
+
+def PayLog : Type 0 := FreeMon Instruction
+
+def ixDigest : Instruction -> Digest :=
+  fun (p : Instruction) => hash (hash (hash (hash tagPay (ixPayee p)) (ixAsset p)) (ixAmount p)) (toU256 (ixPos p))
+
+def ixEntries : PayLog -> Record := fun (l : PayLog) => fmMap Instruction Entry ixDigest l
+
+def ixHead : PayLog -> Digest := fun (l : PayLog) => head (ixEntries l)
+
+def payOk : Covenant -> PayAuth -> Instruction -> PayLog -> Flag :=
+  fun (n : Covenant) (a : PayAuth) (p : Instruction) (l : PayLog) => schnorrOk (keyPay (covPay n)) (payR a) (payZ a) (ixHead l) (ixDigest p)
+
+def paySnoc : Covenant -> PayAuth -> Instruction -> PayLog -> Option PayLog :=
+  fun (n : Covenant) (a : PayAuth) (p : Instruction) (l : PayLog) => flagIf (payOk n a p l) (option (some (fmMul Instruction l (fmEta Instruction p))) (fun (j : OpPos) => none) (verify (ixDigest p) (ixEntries l))) none
+
 -- The issue check (S5 C11, B3-12, B3-36, Q-S5-8 (a), O6). An Issue is
 -- (to, m, cts, proof): the new units go to the holder to, m is the public
 -- amount, cts is (the pub Ct under keyOpenC, the own Ct under key to) in
@@ -727,7 +912,8 @@ def authOk : Polity -> Auth -> Entry -> Record -> Verdict :=
 -- digest of L, the supply in force, the to key, m and the 2 Ct of the
 -- issue. m2 is wordsDigest 0u of the proof words (the trProofDigest form).
 -- covDigest puts each part of a Covenant in the hash chain, with one word
--- for no policy and a different word for some d. ledgerDigest chains each
+-- for no policy and a different word for some d, then the pay key and asset.
+-- ledgerDigest chains each
 -- row of L in ledger order. A replay fails, because each issue changes the
 -- supply in force, and an issue adds no row to L (Q-S6-16). issue c0 L au
 -- is issueBy a n with n = Gov c0 L, and a checks au with schnorrOk under
@@ -745,7 +931,7 @@ def policyWord : U256 -> Option D -> U256 :=
   fun (a : U256) (p : Option D) => option (hash a 0u) (fun (n : D) => hash (hash a 1u) (toU256 n)) p
 
 def covDigest : U256 -> Covenant -> U256 :=
-  fun (a : U256) (c : Covenant) => policyWord (rowsDigest (cpWords (fmChain CPoint U256 u256IsSet cpWords (polityDigest a (polity c)) (issuers c)) (keyOpenC c)) (covRows c)) (covPolicy c)
+  fun (a : U256) (c : Covenant) => hash (hash (policyWord (rowsDigest (cpWords (fmChain CPoint U256 u256IsSet cpWords (polityDigest a (polity c)) (issuers c)) (keyOpenC c)) (covRows c)) (covPolicy c)) (keyPay (covPay c))) (payAsset (covPay c))
 
 def ledgerDigest : FreeMon CDecided -> U256 :=
   fun (L : FreeMon CDecided) => fmChain CDecided U256 u256IsSet (fun (h : U256) (x : CDecided) => hash (covDigest h (first x)) (toU256 (second x))) 0u L

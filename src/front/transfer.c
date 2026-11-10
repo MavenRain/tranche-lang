@@ -131,47 +131,69 @@ static void rest_part(GroupPoint *key, ElgCipher *ct, const TrStatement *st, con
   ct->c2 = d.c2;
 }
 
-/* CT - sum 2^i B_i, by Horner over the bits: Enc(0; R - S) for an honest
-   range, S = sum 2^i s_i. */
-static void range_rest(ElgCipher *out, const TrRange *proof, const ElgCipher *ct) {
+/* CT - sum 2^i BIT[i] over the N bits, by Horner: Enc(0; R - S) for an
+   honest range, S = sum 2^i s_i. */
+static void range_rest(ElgCipher *out, const ElgCipher *bit, uint32_t n, const ElgCipher *ct) {
   ElgCipher acc;
   ElgCipher t;
   uint32_t i;
-  acc = proof->bit[TR_BITS - 1u];
-  for (i = TR_BITS - 1u; i > 0; i--) {
+  acc = bit[n - 1u];
+  for (i = n - 1u; i > 0; i--) {
     elg_add(&t, &acc, &acc);
-    elg_add(&acc, &t, &proof->bit[i - 1u]);
+    elg_add(&acc, &t, &bit[i - 1u]);
   }
   cipher_sub(out, ct, &acc);
 }
 
-/* The range proof of the low TR_BITS bits of V, with no range check. */
-static TrResult range_build(TrRange *out, const GroupPoint *pk, const ElgCipher *ct, uint64_t v, const U256 *r, const U256 *base, const U256 *ctx) {
+/* Bit I of V, I below TR_N_MAX. */
+static uint32_t bit_of(const U256 *v, uint32_t i) {
+  return (uint32_t)((v->limb[i / 64u] >> (i % 64u)) & 1u);
+}
+
+/* OUT = 2^I, I below TR_N_MAX. */
+static void weight(U256 *out, uint32_t i) {
+  u256_from_u64(out, 0u);
+  out->limb[i / 64u] = (uint64_t)1 << (i % 64u);
+}
+
+TrResult tr_range_build(ElgCipher *bit, SigOr *proof, SigDleq *sum, uint32_t n, const GroupPoint *pk, const ElgCipher *ct, const U256 *v, const U256 *r, const U256 *base, const U256 *ctx) {
   ElgCipher d;
   U256 s;
   U256 t;
   U256 word;
   U256 zero;
-  uint32_t bit;
+  uint32_t b;
   uint32_t i;
   SigResult sr = SIG_OK;
-  memset(out, 0, sizeof *out);
+  if (n == 0u || n > TR_N_MAX)
+    return TR_REFUSED;
+  memset(bit, 0, n * sizeof *bit);
+  memset(proof, 0, n * sizeof *proof);
+  memset(sum, 0, sizeof *sum);
   u256_from_u64(&zero, 0u);
   t = zero;
-  for (i = 0; sr == SIG_OK && i < TR_BITS; i++) {
-    bit = (uint32_t)((v >> i) & 1u);
+  for (i = 0; sr == SIG_OK && i < n; i++) {
+    b = bit_of(v, i);
     nonce(&s, base, i);
-    u256_from_u64(&word, bit);
-    elg_encrypt(&out->bit[i], pk, &word, &s);
-    sr = sig_or_prove(&out->proof[i], pk, &out->bit[i], bit, &s, ctx, i);
-    u256_from_u64(&word, (uint64_t)1 << i);
+    u256_from_u64(&word, b);
+    elg_encrypt(&bit[i], pk, &word, &s);
+    sr = sig_or_prove(&proof[i], pk, &bit[i], b, &s, ctx, i);
+    weight(&word, i);
     mul_add(&t, &word, &s, &t);
   }
   if (sr != SIG_OK)
     return from_sig(sr);
-  range_rest(&d, out, ct);
+  range_rest(&d, bit, n, ct);
   sub_mod(&t, r, &t);
-  return from_sig(sig_rand_prove(&out->sum, pk, &d, &zero, &t, ctx));
+  return from_sig(sig_rand_prove(sum, pk, &d, &zero, &t, ctx));
+}
+
+/* The range proof of the low TR_BITS bits of V, with no range check. */
+static TrResult range_build(TrRange *out, const GroupPoint *pk, const ElgCipher *ct, uint64_t v, const U256 *r, const U256 *base, const U256 *ctx) {
+  U256 w;
+  memset(out, 0, sizeof *out);
+  u256_from_u64(&w, v);
+  return tr_range_build(out->bit, out->proof, &out->sum, TR_BITS, pk, ct, &w, r, base, ctx);
 }
 
 TrResult transfer_range_prove(TrRange *out, const GroupPoint *pk, const ElgCipher *ct, uint64_t v, const U256 *r, const U256 *base, const U256 *ctx) {
@@ -180,21 +202,27 @@ TrResult transfer_range_prove(TrRange *out, const GroupPoint *pk, const ElgCiphe
   return range_build(out, pk, ct, v, r, base, ctx);
 }
 
-TrResult transfer_range_verify(const TrRange *proof, const GroupPoint *pk, const ElgCipher *ct, const U256 *ctx) {
+TrResult tr_range_check(const ElgCipher *bit, const SigOr *proof, const SigDleq *sum, uint32_t n, const GroupPoint *pk, const ElgCipher *ct, const U256 *ctx) {
   ElgCipher d;
   U256 zero;
   TrResult res = TR_OK;
   uint32_t i;
+  if (n == 0u || n > TR_N_MAX)
+    return TR_REFUSED;
   if (!group_on_curve(pk) || !cipher_on_curve(ct))
     return TR_REFUSED;
-  for (i = 0; res == TR_OK && i < TR_BITS; i++)
-    res = from_sig(sig_or_verify(&proof->proof[i], pk, &proof->bit[i], ctx, i));
+  for (i = 0; res == TR_OK && i < n; i++)
+    res = from_sig(sig_or_verify(&proof[i], pk, &bit[i], ctx, i));
   if (res != TR_OK)
     return res;
   /* Without the sum, the bits can encode any value. */
-  range_rest(&d, proof, ct);
+  range_rest(&d, bit, n, ct);
   u256_from_u64(&zero, 0u);
-  return from_sig(sig_rand_verify(&proof->sum, pk, &d, &zero, ctx));
+  return from_sig(sig_rand_verify(sum, pk, &d, &zero, ctx));
+}
+
+TrResult transfer_range_verify(const TrRange *proof, const GroupPoint *pk, const ElgCipher *ct, const U256 *ctx) {
+  return tr_range_check(proof->bit, proof->proof, &proof->sum, TR_BITS, pk, ct, ctx);
 }
 
 TrResult transfer_build(TransferProof *out, const TrStatement *st, uint64_t q, const U256 *r, uint64_t mu, const U256 *x_h, const U256 *seed) {
@@ -278,4 +306,28 @@ TrResult transfer_verify(const TransferProof *proof, const TrStatement *st) {
   if (res == TR_OK)
     res = transfer_range_verify(&proof->rest_bits, &st->key_h, &proof->rest, &cx.r);
   return res;
+}
+
+void tr_nonce(U256 *out, const U256 *base, uint64_t i) {
+  nonce(out, base, i);
+}
+
+void tr_mul_add(U256 *out, const U256 *a, const U256 *b, const U256 *c) {
+  mul_add(out, a, b, c);
+}
+
+void tr_sub_mod(U256 *out, const U256 *a, const U256 *b) {
+  sub_mod(out, a, b);
+}
+
+void tr_cipher_sub(ElgCipher *out, const ElgCipher *a, const ElgCipher *b) {
+  cipher_sub(out, a, b);
+}
+
+int tr_cipher_on_curve(const ElgCipher *ct) {
+  return cipher_on_curve(ct);
+}
+
+TrResult tr_from_sig(SigResult r) {
+  return from_sig(r);
 }

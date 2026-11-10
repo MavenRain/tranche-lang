@@ -108,7 +108,7 @@ def bareOf : U256 -> U256 -> Option Identity :=
   fun (x : U256) (r : U256) => bind ring2 (fun (rg : List CPoint) => bind (ecMul g x) (fun (k : CPoint) => bind (claimCom 2 1 r) (fun (c : CPoint) => some (makeIdentity k c rg nil))))
 
 def cov : Option Covenant :=
-  bind p0 (fun (a : CPoint) => bind p1 (fun (b : CPoint) => bind (ecMul g 17u) (fun (ko : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmCons CPoint a (fmCons CPoint b (fmUnit CPoint))) ko tableRows none))))
+  bind p0 (fun (a : CPoint) => bind p1 (fun (b : CPoint) => bind (ecMul g 17u) (fun (ko : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmCons CPoint a (fmCons CPoint b (fmUnit CPoint))) ko tableRows none (payCfgOf 0u 0u)))))
 
 def holdH : Option Holding :=
   bind (idOf 11u 23u) (fun (d : Identity) => bind (ecMul g 11u) (fun (kh : CPoint) => bind (ecMul g 17u) (fun (ko : CPoint) => bind (ctEnc kh 50 (nonceOf 37u)) (fun (o : Ct) => bind (ctEnc ko 50 (nonceOf 37u)) (fun (p : Ct) => some (makeHolding d o p))))))
@@ -236,14 +236,14 @@ def trL2 : Option (Except Nat) :=
 -- ibRun (7 to h, the proof of 7). It gives the supply after the issue, or
 -- the failure. A none is a none before f.
 def covK : Option Covenant :=
-  bind cov (fun (n : Covenant) => bind (ecMul g 11u) (fun (kh : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u (first kh)) (issuers n) (keyOpenC n) (covRows n) (some 0))))
+  bind cov (fun (n : Covenant) => bind (ecMul g 11u) (fun (kh : CPoint) => some (makeCovenant (makePolity (fmUnit Point) 1 1 1 0u (first kh)) (issuers n) (keyOpenC n) (covRows n) (some 0) (covPay n))))
 
 def ledK : Option (FreeMon CDecided) :=
   bind covK (fun (k : Covenant) => some (fmCons CDecided (pair k 1) (fmUnit CDecided)))
 
-def rxI : U256 := 0xf248b40e6f68fae13b46b1095475bd269a41581f12c0b655368103952c1a9d32u
+def rxI : U256 := 0x662f9e843249e8bb04ff0d817b8fadb6fe1cfe86571531e421ce2ce232cb9874u
 
-def zI : U256 := 0xc5ba52e3c76751e6b6552b5d116788b7e6194e864d20efa454f6c264529c7fe7u
+def zI : U256 := 0x1264f7b9047acd3c8e8305a70a903788b4f1ab2e4cfc6cc51f9cb2f3f5d88f8au
 
 def isRun : (Covenant -> FreeMon CDecided -> Measure -> Issue -> Except Measure) -> Nat -> Option (Except Nat) :=
   fun (f : Covenant -> FreeMon CDecided -> Measure -> Issue -> Except Measure) (u : Nat) => bind cov (fun (n : Covenant) => bind ledK (fun (l : FreeMon CDecided) => bind holdH (fun (h : Holding) => bind (idOf 11u 23u) (fun (d : Identity) => bind (ecMul g 11u) (fun (kh : CPoint) => bind (ecMul g 17u) (fun (ko : CPoint) => bind (ctEnc ko 7 (nonceOf 47u)) (fun (co : Ct) => bind (ctEnc kh 7 (nonceOf 53u)) (fun (ci : Ct) => bind (issueProve ko kh (pair co ci) (unitsOf 7) (cons 47u (cons 53u nil))) (fun (pf : List U256) => some (exBind Measure Nat (makeMeasure (fmEta Holding h) (unitsOf u) 0u) (fun (s : Measure) => exBind Measure Nat (f n l s (makeIssue d (unitsOf 7) (pair co ci) pf)) (fun (r : Measure) => exEta Nat (unitsVal (supply r))))))))))))))
@@ -254,7 +254,7 @@ def isGood : Option (Except Nat) :=
 
 -- z + 1: the signature fails, so noQuorum.
 def isBadZ : Option (Except Nat) :=
-  isRun (fun (c : Covenant) (l : FreeMon CDecided) (s : Measure) (i : Issue) => issue c l (authOf rxI 0xc5ba52e3c76751e6b6552b5d116788b7e6194e864d20efa454f6c264529c7fe8u) s i) 100
+  isRun (fun (c : Covenant) (l : FreeMon CDecided) (s : Measure) (i : Issue) => issue c l (authOf rxI 0x1264f7b9047acd3c8e8305a70a903788b4f1ab2e4cfc6cc51f9cb2f3f5d88f8bu) s i) 100
 
 -- A replay: the same signature on the measure after the first issue. m1
 -- binds the supply in force (107 now), so noQuorum.
@@ -264,3 +264,12 @@ def isReplay : Option (Except Nat) :=
 -- The empty ledger: Gov cov L is cov, its keyAppend is 0u, so noQuorum.
 def isNoKey : Option (Except Nat) :=
   isRun (fun (c : Covenant) (l : FreeMon CDecided) (s : Measure) (i : Issue) => issue c (fmUnit CDecided) (authOf rxI zI) s i) 100
+
+-- An issue signature cannot authorize a ledger with a different pay key
+-- or asset, even when its other covenant fields and supply are unchanged.
+def isOtherPay : PayCfg -> Option (Except Nat) :=
+  fun (p : PayCfg) => isRun (fun (c : Covenant) (l : FreeMon CDecided) (s : Measure) (i : Issue) => issue c (fmMap CDecided CDecided (fun (d : CDecided) => pair (makeCovenant (polity (first d)) (issuers (first d)) (keyOpenC (first d)) (covRows (first d)) (covPolicy (first d)) p) (second d)) l) (authOf rxI zI) s i) 100
+
+def isPayKey : Option (Except Nat) := isOtherPay (payCfgOf (first g) 0u)
+
+def isPayAsset : Option (Except Nat) := isOtherPay (payCfgOf 0u 1u)

@@ -1,0 +1,159 @@
+-- tranche-lang S7 C8 (BUILD r4): the pay log and withdrawal rows (PLAN 4.4,
+-- L18, section 9). The pay words are the `frosttool pay` words (r3b): the
+-- committee 3 of 4 of blsag_key(600 + i), signers 1, 2 and 3, the seeds 610,
+-- 620 and 630. ixP pays 60 of the asset 3u to 2u at 20, ixQ is ixP with the
+-- amount 0. covP holds the pay key pkPay (payCfgOf pkPay 3u). (pkR, pkZ) signs
+-- ixP at the empty log, (pkReplayR, pkReplayZ) signs ixP at [ixP] and
+-- (pk2R, pk2Z) signs ixQ at [ixP]. pkZBad is pkZ + 1.
+def g : CPoint :=
+  pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u
+
+def R : Claims -> Claims -> Option Units :=
+  fun (h : Claims) (k : Claims) => fold none (fold none (fold none (fold none (some (unitsOf 100)) (claimStatus k)) none (claimJuris k)) (claimStatus h)) none (claimJuris h)
+
+def tableRows : Rows := rowsOf (rTable R)
+
+def pkPay : Point := 0xa91fee8d0606681e278db685904549c490e1f5fbed1520b5ab0d4511d40ed8c0u
+
+def pkHead1 : Digest := 0x583d69ea52ac00de5a1a74a78bf9a1c60ebf9625c60b0b7d68a5a33ba533b9feu
+
+def pkR : U256 := 0x9f1e160c2d540bac0c88deb4a948d1f36a3585ac258656e30354d27dd73c94feu
+
+def pkZ : U256 := 0x85da73845c9b2cdfdc65e82bdaa79d570394b60188ff934cee31428802b0d76au
+
+def pkZBad : U256 := 0x85da73845c9b2cdfdc65e82bdaa79d570394b60188ff934cee31428802b0d76bu
+
+def pkReplayR : U256 := 0x8f079aae33d887f4b640c36845047dd8de49a67194b45003ca97fa51b0af8dbeu
+
+def pkReplayZ : U256 := 0xbd3684ae231e4ac938456178a9472209a8a8de4fed529227dd75d618ca4d847u
+
+def pk2R : U256 := 0xa12e797186965ebab1d6b2e93e0870d546fa8b0d8a4bc35705410f6d3b52447fu
+
+def pk2Z : U256 := 0xf0782247afe73df997374106aa287ff5a44dca2ccc4e8a2cbfcf0399fd3c0216u
+
+def covP : Covenant :=
+  makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmUnit CPoint) g tableRows none (payCfgOf pkPay 3u)
+
+-- A covenant digest binds both parts of its payment configuration.
+def covWithPay : PayCfg -> Covenant :=
+  fun (p : PayCfg) => makeCovenant (polity covP) (issuers covP) (keyOpenC covP) (covRows covP) (covPolicy covP) p
+
+def covPayKeyBound : Path Flag (u256Eq (covDigest 0u covP) (covDigest 0u (covWithPay (payCfgOf (first g) 3u)))) flagNo :=
+  refl
+
+def covPayAssetBound : Path Flag (u256Eq (covDigest 0u covP) (covDigest 0u (covWithPay (payCfgOf pkPay 4u)))) flagNo :=
+  refl
+
+def ixP : Instruction := instructionOf 2u 3u 60u 20
+
+def ixQ : Instruction := instructionOf 2u 3u 0u 20
+
+def log0 : PayLog := fmUnit Instruction
+
+def log1 : PayLog := fmEta Instruction ixP
+
+def headOf : Option PayLog -> Option Digest :=
+  fun (o : Option PayLog) => bind o (fun (l : PayLog) => some (ixHead l))
+
+-- The head of [ixP] is the frosttool word payHead1.
+def payHead : Path Digest (ixHead log1) pkHead1 := refl
+
+-- The first pay: (pkR, pkZ) on ixP and the empty log gives [ixP].
+def payFirst : Path (Option Digest) (headOf (paySnoc covP (payAuthOf pkR pkZ) ixP log0)) (some pkHead1) :=
+  refl
+
+-- The replay: a valid signature on ixP at [ixP] gives none, because verify
+-- finds ixDigest ixP in the record (valid once).
+def payReplay : Path (Option PayLog) (paySnoc covP (payAuthOf pkReplayR pkReplayZ) ixP log1) none :=
+  refl
+
+-- The second pay: (pk2R, pk2Z) on ixQ and [ixP] gives [ixP, ixQ].
+def paySecond : Path (Option Digest) (headOf (paySnoc covP (payAuthOf pk2R pk2Z) ixQ log1)) (some (ixHead (fmMul Instruction log1 (fmEta Instruction ixQ)))) :=
+  refl
+
+-- A stale head: the signature of ixP at the empty log does not verify at
+-- [ixP]. A changed z does not verify.
+def payStale : Path (Option PayLog) (paySnoc covP (payAuthOf pkR pkZ) ixP log1) none := refl
+
+def payBadZ : Path (Option PayLog) (paySnoc covP (payAuthOf pkR pkZBad) ixP log0) none := refl
+
+-- L18 and the section 9 regression row: w = floor(n / 2^32) on an empty
+-- measure gives outOfRange before the proof, and so does w = limA (2^128).
+-- wdF0 is not attested: the range check comes first.
+def wdF0 : Identity := makeIdentity g g nil nil
+
+def wdM0 : Measure := pair (fmUnit Holding) (pair (unitsOf 0) 0u)
+
+def wdBig : U256 := 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cu
+
+def wdRange : Path (Except (Prod Measure Instruction)) (withdrawOut covP wdM0 (makeWithdraw wdF0 wdBig nil 0u 0u 0)) (exFail (Prod Measure Instruction) outOfRange) :=
+  refl
+
+def wdLim : Path (Except (Prod Measure Instruction)) (withdrawOut covP wdM0 (makeWithdraw wdF0 limA nil 0u 0u 0)) (exFail (Prod Measure Instruction) outOfRange) :=
+  refl
+
+-- The kit pair (the r2 open point): withdrawProve then withdrawVerify on
+-- bal = Enc(3 2^32; 37) under x_h 11 and w = 2 gives flagYes. REST is 2^32.
+def wdBalH : Option Ct := bind (ecMul g 11u) (fun (k : CPoint) => ctEnc k 12884901888 (nonceOf 37u))
+
+def wdProveVerify : Path (Option Flag) (bind (ecMul g 11u) (fun (k : CPoint) => bind wdBalH (fun (c : Ct) => bind (withdrawProve k c 2u (cons 12884901888u (cons 11u (cons 41u nil)))) (fun (p : List U256) => withdrawVerify k c 2u p)))) (some flagYes) :=
+  refl
+
+-- Section 9 and L6 (S7 C8, PLAN 9 and 4.4). fD0 is debreu 0, so the
+-- policy is wAll and A = a. At distributed = 2^128 - 1, A = 1 gives full
+-- before u and before any balance (no state change). At supply 0, A = 1
+-- credits nothing: the Measure stays wdM0, and the treasury keeps the
+-- whole inflow, res A = 2^32 (L6). At supply 3, A = 1 gives u =
+-- floor(2^32 / 3) and res A = 1, which is below the supply, and 3 * u +
+-- res A = 2^32 (L6, the positive-supply rounding row). The holder bag of
+-- these Measures is empty, so the rows check the U256 side of L6.
+def fD0 : Fate := debreu 0
+
+def wdMFull : Measure :=
+  pair (fmUnit Holding) (pair (unitsOf 1) 0xffffffffffffffffffffffffffffffffu)
+
+def s9Full : Path (Except (Prod Measure U256)) (distribute fD0 wdMFull (inflowOf rent 1u)) (exFail (Prod Measure U256) full) :=
+  refl
+
+def s9Zero : Path (Except (Prod Measure U256)) (distribute fD0 wdM0 (inflowOf rent 1u)) (exEta (Prod Measure U256) (pair wdM0 4294967296u)) :=
+  refl
+
+def wdM3 : Measure := pair (fmUnit Holding) (pair (unitsOf 3) 0u)
+
+def l6Claim : Path (Option U256) (claim 1u wdM3) (some 1431655765u) := refl
+
+def l6Round : Path (Except (Prod Measure U256)) (distribute fD0 wdM3 (inflowOf rent 1u)) (exEta (Prod Measure U256) (pair (pair (fmUnit Holding) (pair (unitsOf 3) 1u)) 1u)) :=
+  refl
+
+def l6Sum : Path (Option U256) (bind (u256Mul 1431655765u 3u) (fun (t : U256) => u256Add t 1u)) (some twoP) :=
+  refl
+
+-- L8 (S7 C8, PLAN 4.4): amendC and amendAll take no Measure and no
+-- treasury value, so L8 holds by the types: an amendment does not change
+-- the state at the amendment. mu (supply and distributed), the balances
+-- (holdBal of each holding) and the treasury (second) are the state after
+-- the ledger before the amendment. The rows show it on one run: covL8
+-- credits the holders (policy 0), the amendment to covL8B (policy 1)
+-- passes, and the state after lL8 is SAME after the amendment.
+def covL8 : Covenant :=
+  makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmUnit CPoint) g tableRows (some 0) (payCfgOf pkPay 3u)
+
+def covL8B : Covenant :=
+  makeCovenant (makePolity (fmUnit Point) 1 1 1 0u 0u) (fmUnit CPoint) g tableRows (some 1) (payCfgOf pkPay 3u)
+
+def dsL8 : FreeMon CDecided := fmCons CDecided (pair covL8B 1) (fmUnit CDecided)
+
+def lL8 : List Inflow := cons (inflowOf rent 1u) nil
+
+def lL8Post : List Inflow := nil
+
+def mL8 : Option Measure :=
+  bind (ctEnc g 1 (nonceOf 37u)) (fun (o : Ct) => some (pair (fmEta Holding (makeHolding wdF0 o o)) (pair (unitsOf 1) 0u)))
+
+def trL8 : Option (Except (Prod Measure U256)) :=
+  bind mL8 (fun (m : Measure) => some (treasury (fateOf covL8) m lL8))
+
+def lawL8Gov : Path Covenant (amendC covL8 dsL8) covL8B := refl
+
+def lawL8Keep : Path (Option (Except (Prod Measure U256))) (bind trL8 (fun (e : Except (Prod Measure U256)) => some (exBind (Prod Measure U256) (Prod Measure U256) e (fun (p : Prod Measure U256) => fold (tyStep (fateOf (amendC covL8 dsL8))) (fun (q : Prod Measure U256) => exEta (Prod Measure U256) q) lL8Post p)))) trL8 :=
+  refl

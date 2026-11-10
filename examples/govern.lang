@@ -24,7 +24,7 @@ def outRing : Option (List CPoint) :=
 def poll : Digest := 0u
 
 def cov : Option Covenant :=
-  bind p0 (fun (a : CPoint) => bind p1 (fun (b : CPoint) => some (makeCovenant (makePolity (fmCons Point (first a) (fmCons Point (first b) (fmUnit Point))) 1 1 1 0u 0u) (fmCons CPoint a (fmCons CPoint b (fmUnit CPoint))) a (fmUnit (Prod (Prod Claims Claims) Units)) none)))
+  bind p0 (fun (a : CPoint) => bind p1 (fun (b : CPoint) => some (makeCovenant (makePolity (fmCons Point (first a) (fmCons Point (first b) (fmUnit Point))) 1 1 1 0u 0u) (fmCons CPoint a (fmCons CPoint b (fmUnit CPoint))) a (fmUnit (Prod (Prod Claims Claims) Units)) none (payCfgOf 0u 0u))))
 
 -- ballotOf ro k s v: the AmendBallot of v by the ring key k on the ring
 -- ro, signed on the digest s and sealed under the amendTag on poll.
@@ -142,7 +142,7 @@ def decideYN : Option Flag :=
 -- some 1 (wRent). The W of covD keeps a rent of 100u and gives 0u for
 -- a sale. cov has no policy, so GovPi gives none.
 def covD : Option Covenant :=
-  bind cov (fun (n : Covenant) => some (makeCovenant (polity n) (issuers n) (keyOpenC n) (covRows n) (some 1)))
+  bind cov (fun (n : Covenant) => some (makeCovenant (polity n) (issuers n) (keyOpenC n) (covRows n) (some 1) (covPay n)))
 
 def piRent : Option U256 :=
   bind covD (fun (n : Covenant) => bind (GovPi n) (fun (rw : Prod Rows W) => some (wApply (second rw) rent 100u)))
@@ -160,10 +160,10 @@ def piNone : Option U256 :=
 -- no policy: its fate is impossible, AggOf of it is Empty, and each
 -- witness at covN gives an Empty (L16).
 def covG : Covenant :=
-  makeCovenant (makePolity (fmCons Point (first g) (fmUnit Point)) 1 1 1 0u 0u) (fmCons CPoint g (fmUnit CPoint)) g (fmUnit (Prod (Prod Claims Claims) Units)) (some 1)
+  makeCovenant (makePolity (fmCons Point (first g) (fmUnit Point)) 1 1 1 0u 0u) (fmCons CPoint g (fmUnit CPoint)) g (fmUnit (Prod (Prod Claims Claims) Units)) (some 1) (payCfgOf 0u 0u)
 
 def covN : Covenant :=
-  makeCovenant (makePolity (fmCons Point (first g) (fmUnit Point)) 1 1 1 0u 0u) (fmCons CPoint g (fmUnit CPoint)) g (fmUnit (Prod (Prod Claims Claims) Units)) none
+  makeCovenant (makePolity (fmCons Point (first g) (fmUnit Point)) 1 1 1 0u 0u) (fmCons CPoint g (fmUnit CPoint)) g (fmUnit (Prod (Prod Claims Claims) Units)) none (payCfgOf 0u 0u)
 
 def lawSelfG : Path Covenant (Gov covG (fmUnit CDecided)) covG := refl
 
@@ -201,10 +201,10 @@ def lawW : Path Flag (u256Le (wApply wHigh rent 100u) 100u) flagYes := refl
 -- (policyKnown 5 is flagNo) keep covG. l8C is L8 for amendC (no
 -- Measure): one yes vote enacts each Covenant with the policy some 0.
 def covZ : Covenant :=
-  makeCovenant (polity covG) (issuers covG) (keyOpenC covG) (covRows covG) (some 0)
+  makeCovenant (polity covG) (issuers covG) (keyOpenC covG) (covRows covG) (some 0) (covPay covG)
 
 def covBad : Covenant :=
-  makeCovenant (polity covG) (issuers covG) (keyOpenC covG) (covRows covG) (some 5)
+  makeCovenant (polity covG) (issuers covG) (keyOpenC covG) (covRows covG) (some 5) (covPay covG)
 
 def amPass : Covenant := Gov covG (fmCons CDecided (pair covZ 1) (fmUnit CDecided))
 
@@ -224,7 +224,7 @@ def fateN : Fate := fateOf covN
 
 def fatePass : Fate := fateOf amPass
 
-def l8C : (c : Covenant) -> Path Covenant (Gov covG (fmCons CDecided (pair (makeCovenant (polity c) (issuers c) (keyOpenC c) (covRows c) (some 0)) 1) (fmUnit CDecided))) (makeCovenant (polity c) (issuers c) (keyOpenC c) (covRows c) (some 0)) :=
+def l8C : (c : Covenant) -> Path Covenant (Gov covG (fmCons CDecided (pair (makeCovenant (polity c) (issuers c) (keyOpenC c) (covRows c) (some 0) (covPay c)) 1) (fmUnit CDecided))) (makeCovenant (polity c) (issuers c) (keyOpenC c) (covRows c) (some 0) (covPay c)) :=
   fun (c : Covenant) => refl
 
 -- L14 (S6 C11, F8): amendC folds the left factor first (the l9 law of
@@ -261,7 +261,7 @@ def iss2 : CPoint :=
   pair 0xc6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5u 0x1ae168fea63dc339a3c58419466ceaeef7f632653266d0e1236431a950cfe52au
 
 def covA : Covenant :=
-  makeCovenant (makePolity (members (polity covN)) 1 2 1 0u 0u) (fmCons CPoint iss2 (issuers covN)) (keyOpenC covN) (covRows covN) (some 0)
+  makeCovenant (makePolity (members (polity covN)) 1 2 1 0u 0u) (fmCons CPoint iss2 (issuers covN)) (keyOpenC covN) (covRows covN) (some 0) (covPay covN)
 
 def g5L1 : FreeMon CDecided := fmCons CDecided (pair covA 1) (fmUnit CDecided)
 
@@ -276,6 +276,24 @@ def lawG5 : Path Covenant (Gov covN (fmMul CDecided g5L1 g5L2)) covA := refl
 def g5Dist : U256 := distOf covN rent 100u
 
 def g5Keep : Option U256 := keepOf covN rent 100u
+
+-- G5 on a Measure (S7 C3 and C4, Part P, L16): under impossible (covN),
+-- distribute credits nothing, so distributed stays 0u, and the treasury
+-- keeps the inflow, 100 * 2^32. treasury of rent 100 then sale 7 keeps
+-- 107 * 2^32, and the empty ledger keeps 0u.
+def g5M : Except Measure := makeMeasure (fmUnit Holding) (unitsOf 100) 0u
+
+def g5DistT : Except U256 :=
+  exBind Measure U256 g5M (fun (s : Measure) => exBind (Prod Measure U256) U256 (distribute (fateOf covN) s (inflowOf rent 100u)) (fun (r : Prod Measure U256) => exEta U256 (second r)))
+
+def g5DistD : Except U256 :=
+  exBind Measure U256 g5M (fun (s : Measure) => exBind (Prod Measure U256) U256 (distribute (fateOf covN) s (inflowOf rent 100u)) (fun (r : Prod Measure U256) => exEta U256 (distributed (first r))))
+
+def g5Tr : Except U256 :=
+  exBind Measure U256 g5M (fun (s : Measure) => exBind (Prod Measure U256) U256 (treasury (fateOf covN) s (cons (inflowOf rent 100u) (cons (inflowOf sale 7u) nil))) (fun (r : Prod Measure U256) => exEta U256 (second r)))
+
+def g5TrNil : Except U256 :=
+  exBind Measure U256 g5M (fun (s : Measure) => exBind (Prod Measure U256) U256 (treasury (fateOf covN) s nil) (fun (r : Prod Measure U256) => exEta U256 (second r)))
 
 def g5Fate : Fate := fateOf g5A
 

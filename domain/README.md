@@ -58,6 +58,7 @@ of each section gives its rule or ruling.
 | Quorum and proofs | `Quorum`, the law def `open`, `ZKProof`, the sealed family `Transcript`, the law def `verified` |
 | Part D, the DAO | `Point`, `Count`, `verdictNo`, `isSetProd`, `encEtaOf`, `encIsSet`, `Polity`, `makePolity`, `members`, `tAppend`, `tAmend`, `tOpen`, `keyOpen`, `keyAppend`, `polityIsSet`, `Proposal`, `Bit`, `SealedBallot`, `mkBallot`, `ballotVote`, `linkTag`, `Box`, `tagUsed`, `castBallot`, `tallyBox`, `countVotes`, `Decided`, `decideYes`, `enact`, `stepD`, `amendAll` |
 | Part G, the polity (S6) | `Rows`, `rowsOf`, `D`, `covPolicy`, `covIsSet`, `Kind`, `W`, `wApply`, `wAll`, `wRent`, `wZero`, `policyOf`, `policyKnown`, `Fate`, `fateOf`, `CDecided`, `decideC`, `stepC`, `amendC`, `Gov`, `GovPi`, `AggOf`, `IsSelfConstituting`, the issue digests `claimsWord`, `rowsDigest`, `polityDigest`, `policyWord`, `covDigest`, `ledgerDigest`, `tagIssue`, `issDigest` and `issue`, the amend ballot `AmendBallot`, `amendSealed`, `amendRing`, `amendSig`, `amendChoice`, `KeyTag`, `keyNone`, `keyStep`, `keyImage`, `amendTag`, `isMemberKey`, `memberRing`, `amendOk`, `castAmend`, `mkAmend` |
+| Part P, distribution and payment (S7) | `Inflow`, `claim`, `distribute`, `treasury`, `WithdrawProof`, `Withdraw`, `makeWithdraw`, `Instruction`, `wdDigest`, `withdrawOut`, `PayAuth`, `PayLog`, `ixDigest`, `ixHead`, `payOk`, `paySnoc` |
 | Positions, words and orbits | `Pos`, `Word`, `sizePred`, `consP`, `swapFront`, `actW`, `ChoiceBag`, `OrbitN` |
 | The charter | `Charter` (an inductive-inductive family) |
 | Equivalences | `isContr`, `fiber`, `isEquiv`, `Equiv`, `idEquiv`, `isoCap`, `isoPath`, `isoToEquiv`, `ua`, `uaArrow` |
@@ -84,6 +85,12 @@ of each section gives its rule or ruling.
   ballot, `Gov`, `GovPi`, the fate, IsSelfConstituting and the G5 rows
   (Q-S6-8 (a), Q-S6-18 (a)). The rows `test/check/govern-*.lang` are
   its refusal rows.
+- `examples/pay.lang` uses Part P in a guest program: `distribute`,
+  `treasury`, `withdrawOut` and PayAuth, with the rows of Q-S7-6 (a)
+  that reach no secret op. It lowers (`langc --kit ir`).
+  `examples/paywd.lang` holds the rows that reach a secret op
+  (`zkKey`, `attestSign`, `withdrawProve`): G1 and L7. The ir stage of
+  `test/gate.sh` refuses it with `REFUSE_TARGET_SECRET`.
 - `examples/trkit.lang` holds the issue rows `isGood`, `isBadZ`,
   `isReplay` and `isNoKey` (Q-S6-17 (a)). `issue` checks a threshold
   signature of `keyAppend` of the Covenant that `Gov` gives, on

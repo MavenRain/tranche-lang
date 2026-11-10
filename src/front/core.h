@@ -99,6 +99,8 @@ typedef enum {
   OP_JR_OPEN,
   OP_TRANSFER_PROVE,
   OP_TRANSFER_VERIFY,
+  OP_WITHDRAW_PROVE,
+  OP_WITHDRAW_VERIFY,
   OP_ISSUE_PROVE,
   OP_ISSUE_VERIFY,
   OP_RTABLE,     /* rTable R (S4 C6, Q-S4-7): the checker gives the static list, so no core has it */

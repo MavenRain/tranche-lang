@@ -9,12 +9,19 @@
    key signs. The message is the head of the empty record (hash tagGenesis
    0) and the entry 42. The seeds are fixed for reproducible vectors only.
    With the argument `words` it also prints the closed Auth words of
-   examples/append.lang (slice S7 b5), one `name 0x<word>` per line. */
+   examples/append.lang (slice S7 b5), one `name 0x<word>` per line. The
+   pay rows (slice S7 C7) run on every run: the C ixDigest gives the kernel
+   vector, and the pay committee signs (ixHead log, ixDigest p). With the
+   argument `pay` it also prints the pay words of examples/pay.lang in the
+   same form. The wd rows (slice S7 C8) sign the G1 withdrawal of
+   examples/pay.lang with one plain key and, with the argument `wd`,
+   print its words in the same form. */
 #include <stdio.h>
 #include <string.h>
 
 #include "front/blsag.h"
 #include "front/dkg.h"
+#include "front/elgamal.h"
 #include "front/frost.h"
 
 static int fail(const char *what) {
@@ -128,6 +135,190 @@ static AuthResult session(AuthSig *sig, AuthCommit *list, AuthShare *zs, const T
       return r;
   }
   return frost_aggregate(sig, &at, zs, list, k, keys, t, n, pk, head, e);
+}
+
+/* H3 of domain/domain.lang: hash (hash T D) E. */
+static void h3(U256 *out, const U256 *t, const U256 *d, const U256 *e) {
+  thr_hash(out, t, d);
+  thr_hash(out, out, e);
+}
+
+/* ixDigest of domain/domain.lang (slice S7 C7) for the Instruction
+   (PAYEE, ASSET, AMOUNT, POS) under TAG: hash (hash (hash (hash TAG
+   PAYEE) ASSET) AMOUNT) (toU256 POS). */
+static void ix_digest(U256 *d, const U256 *tag, uint64_t payee, uint64_t asset, uint64_t amount, uint64_t pos) {
+  U256 x;
+  u256_from_u64(&x, payee);
+  thr_hash(d, tag, &x);
+  u256_from_u64(&x, asset);
+  thr_hash(d, d, &x);
+  u256_from_u64(&x, amount);
+  thr_hash(d, d, &x);
+  u256_from_u64(&x, pos);
+  thr_hash(d, d, &x);
+}
+
+/* word, only when SHOW is set. */
+static void shown(int show, const char *name, const U256 *w) {
+  if (show)
+    word(name, w);
+}
+
+/* One pay signature: the 3 of 4 session with the signers 1, 2 and 3 on
+   (HEAD, D), then schnorr_verify under PX. It puts the signature in SIG
+   and, with SHOW, prints R_NAME and Z_NAME. 0 when the session or the
+   check fails. */
+static int pay_signed(int show, const char *r_name, const char *z_name, AuthSig *sig, const ThrShare *shares, const GroupPoint *keys, const GroupPoint *pk, const U256 *px, const U256 *head, const U256 *d, uint64_t seed) {
+  static const uint32_t trio[3] = {1u, 2u, 3u};
+  AuthCommit list[THR_N_MAX];
+  AuthShare zs[THR_N_MAX];
+  if (session(sig, list, zs, shares, trio, 3u, keys, 3u, 4u, pk, head, d, seed) != AUTH_OK || schnorr_verify(px, sig, head, d) != AUTH_OK)
+    return fail(r_name);
+  shown(show, r_name, &sig->rx);
+  shown(show, z_name, &sig->z);
+  return 1;
+}
+
+/* The pay rows (slice S7 C7): a 3 of 4 keyPay committee from the seeds
+   blsag_key(600 + i) and its key payKey. p is the Instruction (payee 2,
+   asset 3, amount 60, pos 20) and q is p with the amount 0. G0 is ixHead
+   of the empty log (the head of the empty record), and h1 = H3 tagAppend
+   g0 (ixDigest p) is ixHead of the log [p]. payDigest is ixDigest p,
+   payDigest2 is ixDigest q and payHead1 is h1. payR, payZ: p at g0.
+   payZBad is payZ plus 1. payReplayR, payReplayZ: p at h1. pay2R, pay2Z:
+   q at h1. The C ixDigest of (1, 2, 3, 4) must give the kernel vector,
+   payZBad must not verify, and the signature of p at g0 must not verify
+   at h1. With SHOW it prints the words. 0 on a failure. */
+static int pay_words(const U256 *g0, int show) {
+  ThrShare shares[THR_N_MAX];
+  GroupPoint pk;
+  GroupPoint keys[THR_N_MAX];
+  U256 seeds[THR_N_MAX];
+  U256 tag;
+  U256 append;
+  U256 want;
+  U256 px;
+  U256 py;
+  U256 one;
+  U256 dv;
+  U256 dp;
+  U256 dq;
+  U256 h1;
+  AuthSig sig;
+  AuthSig bad;
+  AuthSig x;
+  uint32_t i;
+  for (i = 0; i < 4u; i++)
+    blsag_key(&seeds[i], 600u + i);
+  if (!committee(shares, &pk, keys, seeds, 3u, 4u))
+    return fail("the keyPay committee");
+  group_to_words(&px, &py, &pk);
+  u256_from_u64(&tag, 0x6e6368652d706179ull);
+  tag.limb[1] = 0x747261ull;
+  u256_from_u64(&append, 0x6e2d617070656e64ull);
+  append.limb[1] = 0x63616972ull;
+  u256_from_u64(&want, 0xd8efb97c45225e47ull);
+  want.limb[1] = 0x5fffa0c6d2ecb44dull;
+  want.limb[2] = 0x6cd1b31d7746c5a1ull;
+  want.limb[3] = 0xda35b30ff4652bebull;
+  u256_from_u64(&one, 1u);
+  ix_digest(&dv, &tag, 1u, 2u, 3u, 4u);
+  ix_digest(&dp, &tag, 2u, 3u, 60u, 20u);
+  ix_digest(&dq, &tag, 2u, 3u, 0u, 20u);
+  h3(&h1, &append, g0, &dp);
+  if (!holds("ixDigest gives the kernel vector", same(&dv, &want)))
+    return 0;
+  shown(show, "payKey", &px);
+  shown(show, "payDigest", &dp);
+  shown(show, "payDigest2", &dq);
+  shown(show, "payHead1", &h1);
+  if (!pay_signed(show, "payR", "payZ", &sig, shares, keys, &pk, &px, g0, &dp, 610u))
+    return 0;
+  bad = sig;
+  u256_add(&bad.z, &sig.z, &one);
+  shown(show, "payZBad", &bad.z);
+  return holds("payZBad does not verify", schnorr_verify(&px, &bad, g0, &dp) != AUTH_OK)
+         && holds("payR does not verify at h1", schnorr_verify(&px, &sig, &h1, &dp) != AUTH_OK)
+         && pay_signed(show, "payReplayR", "payReplayZ", &x, shares, keys, &pk, &px, &h1, &dp, 620u)
+         && pay_signed(show, "pay2R", "pay2Z", &x, shares, keys, &pk, &px, &h1, &dq, 630u);
+}
+
+/* The withdrawal words of examples/pay.lang (slice S7 C8, Q-S7-14): one
+   plain Schnorr signature by the G1 key x_h = 11 on (m1, m2), with m1 =
+   wdDigest (idKey f) bal 2 30 3 and m2 = wdProofDigest proof, the guest
+   words of the G1 rows, and the nonce k = blsag_key(640). The x-only lift
+   takes the smaller y, so x is negated when P = x G has the larger y and
+   k when R = k G has the larger y; z = k + c x mod GROUP_N with c =
+   frost_challenge(P.x, R.x, m1, m2). P.x must be the guest word g1Px, the
+   signature must verify, and wdZBad (wdZ plus 1) must not. With SHOW it
+   prints wdR, wdZ and wdZBad. 0 on a failure. */
+static int wd_words(int show) {
+  GroupPoint g;
+  GroupPoint p;
+  GroupPoint r;
+  U256 xh;
+  U256 k;
+  U256 px;
+  U256 py;
+  U256 ry;
+  U256 c;
+  U256 m1;
+  U256 m2;
+  U256 want;
+  U256 one;
+  Fe fx;
+  Fe fk;
+  Fe fc;
+  Fe neg;
+  Fe cx;
+  Fe fz;
+  AuthSig sig;
+  AuthSig bad;
+  u256_from_u64(&m1, 0x8b33e465f8a9a485ull);
+  m1.limb[1] = 0x3f467168ed4cc85eull;
+  m1.limb[2] = 0xb9bb32488eacd884ull;
+  m1.limb[3] = 0x2133fc014a91cd3full;
+  u256_from_u64(&m2, 0xd07842695aa644abull);
+  m2.limb[1] = 0xe04def187cf29c3bull;
+  m2.limb[2] = 0x41382351ba699a48ull;
+  m2.limb[3] = 0x38d6a0852dffe219ull;
+  u256_from_u64(&want, 0xbbec17895da008cbull);
+  want.limb[1] = 0x5649980be5c17891ull;
+  want.limb[2] = 0x5ef4246b70c65aacull;
+  want.limb[3] = 0x774ae7f858a9411eull;
+  u256_from_u64(&xh, 11u);
+  u256_from_u64(&one, 1u);
+  blsag_key(&k, 640u);
+  elg_generator(&g);
+  group_mul(&p, &g, &xh);
+  group_mul(&r, &g, &k);
+  group_to_words(&px, &py, &p);
+  group_to_words(&sig.rx, &ry, &r);
+  if (!fe_from_u256(&fx, &xh, &GROUP_N) || !fe_from_u256(&fk, &k, &GROUP_N))
+    return fail("the wd scalars");
+  if (larger_y(&p)) {
+    fe_neg(&neg, &fx, &GROUP_N);
+    fx = neg;
+  }
+  if (larger_y(&r)) {
+    fe_neg(&neg, &fk, &GROUP_N);
+    fk = neg;
+  }
+  frost_challenge(&c, &px, &sig.rx, &m1, &m2);
+  if (!fe_from_u256(&fc, &c, &GROUP_N))
+    return fail("the wd challenge");
+  fe_mul(&cx, &fc, &fx, &GROUP_N);
+  fe_add(&fz, &fk, &cx, &GROUP_N);
+  fe_to_u256(&sig.z, &fz);
+  bad = sig;
+  u256_add(&bad.z, &sig.z, &one);
+  if (!holds("wdKey is g1Px", same(&px, &want)) || !holds("wdZ verifies", schnorr_verify(&px, &sig, &m1, &m2) == AUTH_OK)
+      || !holds("wdZBad does not verify", schnorr_verify(&px, &bad, &m1, &m2) != AUTH_OK))
+    return 0;
+  shown(show, "wdR", &sig.rx);
+  shown(show, "wdZ", &sig.z);
+  shown(show, "wdZBad", &bad.z);
+  return 1;
 }
 
 int main(int argc, char **argv) {
@@ -252,6 +443,10 @@ int main(int argc, char **argv) {
   ok &= expect("the 3 of 4 key signs", session(&sig_t, list_t, zs_t, fresh, three, 3u, new_keys, 3u, 4u, &pk, &head, &e, 330u), AUTH_OK)
         & expect("the 3 of 4 key verifies", schnorr_verify(&px, &sig_t, &head, &e), AUTH_OK);
   if (!ok)
+    return 1;
+  if (!pay_words(&head, argc == 2 && strcmp(argv[1], "pay") == 0))
+    return 1;
+  if (!wd_words(argc == 2 && strcmp(argv[1], "wd") == 0))
     return 1;
   if (argc == 2 && strcmp(argv[1], "words") == 0) {
     u256_add(&z_bad, &sig_a.z, &one);

@@ -6,7 +6,7 @@ TCC ?= tcc
 CC ?= cc
 CFLAGS = -std=c99 -Wall -Werror -Isrc
 CLANG_FLAGS = -std=c99 -Wall -Wextra -Wswitch-enum -Werror -fsyntax-only -Isrc
-FRONT = src/front/base.c src/front/u256.c src/front/field.c src/front/secp256k1.c src/front/blsag.c src/front/ringsig.c src/front/claimcom.c src/front/elgamal.c build/elg_table.c src/front/threshold.c src/front/frost.c src/front/sigma.c src/front/jointr.c src/front/transfer.c src/front/trwire.c src/front/lexer.c src/front/parser.c src/front/front.c src/front/eval.c src/front/check.c src/front/fmt.c src/sha256.c
+FRONT = src/front/base.c src/front/u256.c src/front/field.c src/front/secp256k1.c src/front/blsag.c src/front/ringsig.c src/front/claimcom.c src/front/elgamal.c build/elg_table.c src/front/threshold.c src/front/frost.c src/front/sigma.c src/front/jointr.c src/front/transfer.c src/front/withdraw.c src/front/trwire.c src/front/lexer.c src/front/parser.c src/front/front.c src/front/eval.c src/front/check.c src/front/fmt.c src/sha256.c
 TARGET = src/front/lower.c src/wasm.c src/js.c src/wgsl.c
 SRC = src/main.c src/front/json.c src/front/jsonin.c src/front/codes.c src/mcp.c $(FRONT) $(TARGET)
 FRONT_TOOL = test/fronttool.c $(filter-out src/front/front.c,$(FRONT)) src/front/json.c
@@ -20,6 +20,7 @@ FROST_TOOL = test/frosttool.c src/front/u256.c src/front/field.c src/front/secp2
 SIGMA_TOOL = test/sigmatool.c src/front/u256.c src/front/field.c src/front/secp256k1.c src/front/blsag.c src/front/elgamal.c build/elg_table.c src/front/threshold.c src/front/sigma.c src/sha256.c
 BALLOT_TOOL = test/ballottool.c src/front/u256.c src/front/field.c src/front/secp256k1.c src/front/blsag.c src/front/elgamal.c build/elg_table.c src/front/threshold.c src/front/sigma.c src/sha256.c
 TRANSFER_TOOL = test/transfertool.c src/front/u256.c src/front/field.c src/front/secp256k1.c src/front/blsag.c src/front/elgamal.c build/elg_table.c src/front/threshold.c src/front/sigma.c src/front/transfer.c src/sha256.c
+WITHDRAW_TOOL = test/withdrawtool.c src/front/u256.c src/front/field.c src/front/secp256k1.c src/front/blsag.c src/front/elgamal.c build/elg_table.c src/front/threshold.c src/front/sigma.c src/front/transfer.c src/front/withdraw.c src/sha256.c
 JOINTR_TOOL = test/jointrtool.c src/front/u256.c src/front/field.c src/front/secp256k1.c src/front/blsag.c src/front/elgamal.c build/elg_table.c src/front/threshold.c src/front/sigma.c src/front/claimcom.c src/front/jointr.c src/sha256.c
 SECP_TOOL = test/secptool.c src/front/u256.c src/front/field.c src/front/secp256k1.c
 SHA_TOOL = test/shatool.c src/sha256.c
@@ -37,7 +38,7 @@ HEADERS = $(wildcard src/*.h src/front/*.h)
 
 .PHONY: build check check-clang clean gpu-check
 
-build: build/langc build/fronttool build/blsagtool build/ringsigtool build/claimtool build/elgamaltool build/thresholdtool build/dkgtool build/sigmatool build/frosttool build/ballottool build/transfertool build/jointrtool build/secptool build/shatool build/pathtool build/runtool build/wasmtool build/jstool build/wgsltool build/mcptool
+build: build/langc build/fronttool build/blsagtool build/ringsigtool build/claimtool build/elgamaltool build/thresholdtool build/dkgtool build/sigmatool build/frosttool build/ballottool build/transfertool build/withdrawtool build/jointrtool build/secptool build/shatool build/pathtool build/runtool build/wasmtool build/jstool build/wgsltool build/mcptool
 
 build/domain.c: domain/domain.lang gen/embed.c
 	mkdir -p build
@@ -93,6 +94,10 @@ build/ballottool: $(BALLOT_TOOL) $(HEADERS)
 build/transfertool: $(TRANSFER_TOOL) $(HEADERS)
 	mkdir -p build
 	$(TCC) $(CFLAGS) -o build/transfertool $(TRANSFER_TOOL)
+
+build/withdrawtool: $(WITHDRAW_TOOL) $(HEADERS)
+	mkdir -p build
+	$(TCC) $(CFLAGS) -o build/withdrawtool $(WITHDRAW_TOOL)
 
 build/jointrtool: $(JOINTR_TOOL) $(HEADERS)
 	mkdir -p build
@@ -150,6 +155,7 @@ check-clang: build/domain.c build/elg_table.c
 	$(CC) $(CLANG_FLAGS) $(FROST_TOOL)
 	$(CC) $(CLANG_FLAGS) $(BALLOT_TOOL)
 	$(CC) $(CLANG_FLAGS) $(TRANSFER_TOOL)
+	$(CC) $(CLANG_FLAGS) $(WITHDRAW_TOOL)
 	$(CC) $(CLANG_FLAGS) $(JOINTR_TOOL)
 	$(CC) $(CLANG_FLAGS) $(SECP_TOOL)
 	$(CC) $(CLANG_FLAGS) $(SHA_TOOL)
@@ -162,7 +168,7 @@ check-clang: build/domain.c build/elg_table.c
 	$(CC) $(CLANG_FLAGS) test/entrytest.c
 	$(CC) $(CLANG_FLAGS) $(MCP_TOOL)
 
-check: build/langc build/fronttool build/blsagtool build/ringsigtool build/claimtool build/elgamaltool build/thresholdtool build/dkgtool build/sigmatool build/frosttool build/ballottool build/transfertool build/jointrtool build/secptool build/shatool build/pathtool build/runtool build/wasmtool build/jstool build/wgsltool build/mcptool build/jstest build/entrytest check-clang
+check: build/langc build/fronttool build/blsagtool build/ringsigtool build/claimtool build/elgamaltool build/thresholdtool build/dkgtool build/sigmatool build/frosttool build/ballottool build/transfertool build/withdrawtool build/jointrtool build/secptool build/shatool build/pathtool build/runtool build/wasmtool build/jstool build/wgsltool build/mcptool build/jstest build/entrytest check-clang
 	sh test/gate.sh
 	sh test/run.sh
 	sh test/review.sh
@@ -177,6 +183,7 @@ check: build/langc build/fronttool build/blsagtool build/ringsigtool build/claim
 	build/frosttool
 	build/ballottool
 	build/transfertool
+	build/withdrawtool
 	build/jointrtool
 	build/secptool
 	build/shatool

@@ -933,7 +933,7 @@ static int secret_op(Low *l) {
 static int secret_kind(Op op) {
   return op == OP_ZK_KEY || op == OP_ZK_SIGN || op == OP_ZK_WITNESS || op == OP_ZK_CAST || op == OP_ZK_PROVE || op == OP_CLAIM_COM || op == OP_ATTEST_SIGN ||
          op == OP_JR_SEND || op == OP_JR_SELECT || op == OP_JR_OPEN || op == OP_TRANSFER_PROVE ||
-         op == OP_ISSUE_PROVE;
+         op == OP_ISSUE_PROVE || op == OP_WITHDRAW_PROVE;
 }
 
 /* S5 C3 (O4, Q-S5-4 (a)): the domain families HolderKey and Nonce are the
@@ -1136,6 +1136,8 @@ static int lower_canon(Low *l, Buf *b, const Value *v, Operand *out) {
   case OP_JR_OPEN:
   case OP_TRANSFER_PROVE:
   case OP_TRANSFER_VERIFY:
+  case OP_WITHDRAW_PROVE:
+  case OP_WITHDRAW_VERIFY:
   case OP_ISSUE_PROVE:
   case OP_ISSUE_VERIFY:
   case OP_RTABLE:
@@ -2262,6 +2264,7 @@ static int lower_stuck(Low *l, Buf *b, const Value *v, Operand *out) {
   case OP_JR_OPEN:
   case OP_TRANSFER_PROVE:
   case OP_ISSUE_PROVE:
+  case OP_WITHDRAW_PROVE:
     return secret_op(l);
   case OP_ZK_HP:
   case OP_ZK_DIGEST:
@@ -2272,6 +2275,7 @@ static int lower_stuck(Low *l, Buf *b, const Value *v, Operand *out) {
   case OP_ATTEST_VERIFY:
   case OP_TRANSFER_VERIFY:
   case OP_ISSUE_VERIFY:
+  case OP_WITHDRAW_VERIFY:
     return refuse(l, "a host proof check (zk)");
   case OP_RTABLE: /* S4 C6: the checker gives the static list, so no core has it */
     return internal(l, "an rTable after the check");

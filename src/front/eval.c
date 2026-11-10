@@ -44,6 +44,7 @@ static const char *const OP_NAMES[] = {
   [OP_JR_SEND] = "jrSend", [OP_JR_SELECT] = "jrSelect", [OP_JR_OPEN] = "jrOpen",
   [OP_TRANSFER_PROVE] = "transferProve", [OP_TRANSFER_VERIFY] = "transferVerify",
   [OP_ISSUE_PROVE] = "issueProve", [OP_ISSUE_VERIFY] = "issueVerify",
+  [OP_WITHDRAW_PROVE] = "withdrawProve", [OP_WITHDRAW_VERIFY] = "withdrawVerify",
   [OP_RTABLE] = "rTable",
   [OP_ZK_BALLOT] = "ZkBallot", [OP_ZK_WITNESS] = "ZkWitness", [OP_ZK_CAST] = "zkCast",
   [OP_ZK_PROVE] = "zkProve", [OP_ZK_PROJECT] = "zkProject", [OP_ZK_CHECK] = "zkCheck",
@@ -79,6 +80,7 @@ static const unsigned char OP_ARITY[] = {
   [OP_CLAIM_COM] = 3, [OP_ATTEST_SIGN] = 4, [OP_ATTEST_VERIFY] = 4, [OP_RTABLE] = 1,
   [OP_JR_SEND] = 5, [OP_JR_SELECT] = 5, [OP_JR_OPEN] = 5, [OP_TRANSFER_PROVE] = 4, [OP_TRANSFER_VERIFY] = 3,
   [OP_ISSUE_PROVE] = 5, [OP_ISSUE_VERIFY] = 5,
+  [OP_WITHDRAW_PROVE] = 4, [OP_WITHDRAW_VERIFY] = 4,
   [OP_ZK_BALLOT] = 1, [OP_ZK_WITNESS] = 0, [OP_ZK_CAST] = 4, [OP_ZK_PROVE] = 1, [OP_ZK_PROJECT] = 2, [OP_ZK_CHECK] = 4,
   [OP_NAT_IS_SET] = 0, [OP_U256_IS_SET] = 0, [OP_FLAG_IS_SET] = 0, [OP_OPT_NAT_IS_SET] = 0,
   [OP_INTERVAL] = 0, [OP_TRANSP] = 3,
@@ -2139,6 +2141,71 @@ static const Value *tk_transfer_verify(Machine *m, const Value *const *a, uint32
   return some_of(m, flag(m, tr == TR_OK && jr == JR_OK));
 }
 
+/* The withdraw statement of the kit call A (S7 C5, Q-S7-4 (a)): KEY_H,
+   OWN_H and W. 0 when a point is off the curve. */
+static int tk_wd_statement(WdStatement *st, const Value *const *a) {
+  memset(st, 0, sizeof *st);
+  st->w = *a[2]->word;
+  return tk_point(&st->key_h, a[0]) && tk_cipher(&st->own_h, a[1]);
+}
+
+/* 1 when A holds a closed key, a closed Ct, a closed word and a closed
+   list of words (the two withdraw kit words). */
+static int tk_wd_args(const Value *const *a) {
+  return closed_point(a[0]) && tk_ct(a[1]) && a[2]->kind == VAL_WORD && tk_words(a[3]);
+}
+
+/* withdrawProve key bal w [mu, x_h, seed] (S7 C5, Q-S7-4 (a)): some proof
+   words of withdraw_prove. A point off the curve, a secrets list that is
+   not 3 words, TR_RANGE and TR_REFUSED give none. */
+static const Value *tk_withdraw_prove(Machine *m, const Value *const *a, uint32_t n) {
+  WdStatement st;
+  U256 sec[3];
+  WithdrawProof *pf;
+  U256 *w;
+  if (!tk_wd_args(a))
+    return opaque(m, OP_WITHDRAW_PROVE, a, n);
+  if (!tk_wd_statement(&st, a) || !tk_get(sec, a[3], 3u))
+    return constant(m, OP_NONE);
+  pf = arena_alloc(m->arena, sizeof *pf);
+  w = tk_buf(m, WD_PROOF_LEN);
+  if (pf == NULL || w == NULL)
+    return NULL;
+  if (withdraw_prove(pf, &st, &sec[0], &sec[1], &sec[2]) != TR_OK)
+    return constant(m, OP_NONE);
+  if (!wd_proof_put(w, WD_PROOF_LEN, pf))
+    return internal(m, "a withdraw proof that does not encode");
+  return tk_list(m, w, WD_PROOF_LEN);
+}
+
+/* withdrawVerify key bal w proof (S7 C5, Q-S7-4 (a)): some flagYes on
+   TR_OK; some flagNo on TR_BAD_PROOF and on TR_RANGE (W at or over
+   2^WD_W_BITS). A point off the curve, a list that does not decode and
+   TR_REFUSED give none. */
+static const Value *tk_withdraw_verify(Machine *m, const Value *const *a, uint32_t n) {
+  WdStatement st;
+  WithdrawProof *pf;
+  U256 *w;
+  if (!tk_wd_args(a))
+    return opaque(m, OP_WITHDRAW_VERIFY, a, n);
+  pf = arena_alloc(m->arena, sizeof *pf);
+  w = tk_buf(m, WD_PROOF_LEN);
+  if (pf == NULL || w == NULL)
+    return NULL;
+  if (!tk_wd_statement(&st, a) || !tk_get(w, a[3], WD_PROOF_LEN) || !wd_proof_get(pf, w, WD_PROOF_LEN))
+    return constant(m, OP_NONE);
+  switch (withdraw_verify(pf, &st)) {
+  case TR_OK:
+    return some_of(m, flag(m, 1));
+  case TR_BAD_PROOF:
+  case TR_RANGE:
+    return some_of(m, flag(m, 0));
+  case TR_REFUSED:
+    return constant(m, OP_NONE);
+  }
+  return internal(m, "an unknown withdraw result");
+}
+
 /* The issue ctx (B3-9, B3-19): the thr_hash chain from TK_ISSUE_TAG over
    keyOpenC, the key of the holder, the two Ct (c1.x, c1.y, c2.x, c2.y each)
    and M. */
@@ -3121,6 +3188,8 @@ static const Value *transp_data(Machine *m, const Value *head, const Value *line
   case OP_JR_OPEN:
   case OP_TRANSFER_PROVE:
   case OP_TRANSFER_VERIFY:
+  case OP_WITHDRAW_PROVE:
+  case OP_WITHDRAW_VERIFY:
   case OP_ISSUE_PROVE:
   case OP_ISSUE_VERIFY:
   case OP_RTABLE:
@@ -4149,6 +4218,10 @@ static const Value *reduce_op(Machine *m, Op op, uint32_t inst, uint32_t field, 
     return tk_transfer_prove(m, a, n);
   case OP_TRANSFER_VERIFY:
     return tk_transfer_verify(m, a, n);
+  case OP_WITHDRAW_PROVE:
+    return tk_withdraw_prove(m, a, n);
+  case OP_WITHDRAW_VERIFY:
+    return tk_withdraw_verify(m, a, n);
   case OP_ISSUE_PROVE:
     return tk_issue_prove(m, a, n);
   case OP_ISSUE_VERIFY:

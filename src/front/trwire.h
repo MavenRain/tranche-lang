@@ -16,6 +16,7 @@
 #include "front/jointr.h"
 #include "front/transfer.h"
 #include "front/u256.h"
+#include "front/withdraw.h"
 
 /* The tag of the transfer context: the ASCII bytes of "trctx" as a word. */
 extern const U256 TRW_CTX_TAG;
@@ -41,6 +42,14 @@ int trw_m3_put(U256 *out, uint32_t len, const JrM3 *m3);
 int trw_m3_get(JrM3 *m3, const U256 *in, uint32_t len);
 int trw_proof_put(U256 *out, uint32_t len, const TransferProof *pf);
 int trw_proof_get(TransferProof *pf, const U256 *in, uint32_t len);
+
+/* The withdraw proof (S7 C5, Q-S7-4 (a)): REST, REST_KEY, the WD_BITS bit
+   ciphertexts, their WD_BITS bit proofs and SUM, 4 + 5 + 160 x 4 + 160 x 12
+   + 5 = 2574 words. Get wants the exact length and refuses a point off the
+   curve. */
+#define WD_PROOF_LEN 2574u
+int wd_proof_put(U256 *out, uint32_t len, const WithdrawProof *pf);
+int wd_proof_get(WithdrawProof *pf, const U256 *in, uint32_t len);
 
 /* The context of a transfer (O28, B3-15): the chain of thr_hash from
    TRW_CTX_TAG over KEY_H and KEY_K (x, y each), then Q_H, Q_K and Q_O (c1.x,

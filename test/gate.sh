@@ -194,6 +194,8 @@ build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-holder.lang
 build_refused --kit REFUSE_LOWER test/ir/attest-verify.lang
 build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-jrsend.lang
 build_refused --kit REFUSE_LOWER test/ir/transfer-verify.lang
+build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-withdraw.lang
+build_refused --kit REFUSE_LOWER test/ir/withdraw-verify.lang
 # S10: the WGSL module refuses the secret ops too.
 build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-key.lang --wgsl
 build_refused "" REFUSE_KIT test/ir/comb.lang
@@ -244,8 +246,9 @@ echo "build refusals: $builds checked"
 # the secp256k1 ops of part B lower), or REFUSE_TARGET_SECRET for a def that
 # reaches a secret op (Q-S3-24, Q-S4-9: a closed def too, through the defs it
 # names). Only examples/zk.lang, examples/claims.lang, examples/zkcast.lang,
-# examples/trkit.lang, examples/transfer.lang and examples/govern.lang (the
-# amend cast of S6 C4 signs with zkKey) may refuse so. An example with a family-result def exits 0 with an O24 note.
+# examples/trkit.lang, examples/transfer.lang, examples/govern.lang (the
+# amend cast of S6 C4 signs with zkKey) and examples/paywd.lang (the G1
+# identity of S7 C8 signs with zkKey) may refuse so. An example with a family-result def exits 0 with an O24 note.
 irs=0
 host_limits=0
 secrets=0
@@ -259,7 +262,7 @@ for f in examples/*.lang; do
     "1:langc: REFUSE_LOWER: "*"(HOST-LIMIT)"*) host_limits=$((host_limits + 1)); continue ;;
     "1:langc: REFUSE_TARGET_SECRET: "*)
       case $f in
-        examples/zk.lang | examples/claims.lang | examples/zkcast.lang | examples/trkit.lang | examples/transfer.lang | examples/govern.lang) secrets=$((secrets + 1)); continue ;;
+        examples/zk.lang | examples/claims.lang | examples/zkcast.lang | examples/trkit.lang | examples/transfer.lang | examples/govern.lang | examples/paywd.lang) secrets=$((secrets + 1)); continue ;;
       esac
       echo "FAIL ir $f: exit $status: $(head -n 1 "$tmp/ir.err")"; fail=$((fail + 1)); continue ;;
     0: | "0:langc: note: "*"(O24)") ;;

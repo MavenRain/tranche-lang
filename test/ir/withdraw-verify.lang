@@ -1,0 +1,10 @@
+-- withdrawVerify has no target form until S8 (tranche-lang S7 C5,
+-- Q-S7-4 (a)): a run-time state gives REFUSE_LOWER (HOST-LIMIT, a host
+-- proof check). The Ct is ctOf g g, not a ctEnc, so no secret op comes
+-- first.
+def g : CPoint :=
+  pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u
+
+def c0 : Ct := ctOf g g
+
+def ok : (x : U256) -> Option Flag := fun (x : U256) => withdrawVerify (pair x x) c0 x (cons 1u nil)

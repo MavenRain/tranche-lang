@@ -245,6 +245,8 @@ static const Builtin BUILTINS[] = {
   {"jrOpen", 5, RULE_TRANCHE, OP_JR_OPEN, OP_OPTION, 0, VIS_INTERNAL},
   {"transferProve", 4, RULE_TRANCHE, OP_TRANSFER_PROVE, OP_OPTION, 0, VIS_INTERNAL},
   {"transferVerify", 3, RULE_TRANCHE, OP_TRANSFER_VERIFY, OP_OPTION, 0, VIS_INTERNAL},
+  {"withdrawProve", 4, RULE_TRANCHE, OP_WITHDRAW_PROVE, OP_OPTION, 0, VIS_INTERNAL},
+  {"withdrawVerify", 4, RULE_TRANCHE, OP_WITHDRAW_VERIFY, OP_OPTION, 0, VIS_INTERNAL},
   {"issueProve", 5, RULE_TRANCHE, OP_ISSUE_PROVE, OP_OPTION, 0, VIS_INTERNAL},
   {"issueVerify", 5, RULE_TRANCHE, OP_ISSUE_VERIFY, OP_OPTION, 0, VIS_INTERNAL},
   {"rTable", 1, RULE_RTABLE, OP_RTABLE, OP_LIST, 0, VIS_INTERNAL},
@@ -2449,13 +2451,13 @@ static const Core *rule_rtable(Call *k) {
 }
 
 /* The S5 transfer kit words (C9, B3-1, B3-3, B3-7): fixed signatures over
-   a point, a word list, Units, a pair of two Ct, a statement ST (5 points,
-   then 4 Ct), a proof (4 word lists) and the rTable rows. The rows are
+   a point, a word list, Units, a pair of two Ct, one Ct, one U256, a
+   statement ST (5 points, then 4 Ct), a proof (4 word lists) and the rTable rows. The rows are
    inferred: the type must be FreeMon (Prod (Prod C C) Units) (Q-S6-12 (a)) with C = Prod J S
    (class_type), and CLASS is that C. The result is an Option of a word list,
    or of Flag for a verifier. */
 static const Core *rule_tranche(Call *k) {
-  enum { T_POINT, T_WORDS, T_UNITS, T_CT2, T_ST, T_PROOF, T_ROWS, T_CLASS };
+  enum { T_POINT, T_WORDS, T_UNITS, T_CT2, T_ST, T_PROOF, T_ROWS, T_CLASS, T_CT, T_U256 };
   static const struct {
     Op op;
     unsigned char arg[5];
@@ -2466,6 +2468,8 @@ static const Core *rule_tranche(Call *k) {
     {OP_JR_OPEN, {T_ROWS, T_ST, T_WORDS, T_WORDS, T_WORDS}, 0},
     {OP_TRANSFER_PROVE, {T_ST, T_UNITS, T_UNITS, T_WORDS}, 0},
     {OP_TRANSFER_VERIFY, {T_ROWS, T_ST, T_PROOF}, 1},
+    {OP_WITHDRAW_PROVE, {T_POINT, T_CT, T_U256, T_WORDS}, 0},
+    {OP_WITHDRAW_VERIFY, {T_POINT, T_CT, T_U256, T_WORDS}, 1},
     {OP_ISSUE_PROVE, {T_POINT, T_POINT, T_CT2, T_UNITS, T_WORDS}, 0},
     {OP_ISSUE_VERIFY, {T_POINT, T_POINT, T_CT2, T_UNITS, T_WORDS}, 1},
   };
@@ -2479,7 +2483,7 @@ static const Core *rule_tranche(Call *k) {
   const Value *words = tyop(c, OP_LIST, 1, u, NULL, NULL);
   const Value *units = uf < m->family_count ? val_make(m, OP_FAMILY, uf, 0, NULL, NULL, NULL) : NULL;
   const Value *ct = cf < m->family_count ? val_make(m, OP_FAMILY, cf, 0, NULL, NULL, NULL) : NULL;
-  const Value *shape[8] = {NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+  const Value *shape[10] = {NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
   const Core *args[5] = {NULL, NULL, NULL, NULL, NULL};
   const Value *type = NULL;
   size_t row = 0;
@@ -2495,6 +2499,8 @@ static const Core *rule_tranche(Call *k) {
   shape[T_WORDS] = words;
   shape[T_UNITS] = units;
   shape[T_CT2] = tyop(c, OP_PROD, 2, ct, ct, NULL);
+  shape[T_CT] = ct;
+  shape[T_U256] = u;
   shape[T_ST] = ct;
   for (i = 0; i < 3u; i++) shape[T_ST] = tyop(c, OP_PROD, 2, ct, shape[T_ST], NULL);
   for (i = 0; i < 5u; i++) shape[T_ST] = tyop(c, OP_PROD, 2, point, shape[T_ST], NULL);
