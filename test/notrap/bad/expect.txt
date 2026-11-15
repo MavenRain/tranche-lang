@@ -1,0 +1,13 @@
+call-indirect.wat call_indirect
+div-no-guard.wat a div or rem whose divisor is not X | (X == 0), Y + (Y == 0) or select(C, X, X == 0)
+es-div.mjs a / whose divisor can be 0
+es-powmod.mjs a powMod call whose modulus is not P or N
+es-throw.mjs a throw
+float.wat a float op
+max-above-min.wat a memory whose max is not its min (N3)
+memory-grow.wat memory.grow
+no-max.wat a memory whose max is not its min (N3)
+rem-no-guard.wat a div or rem whose divisor is not X | (X == 0), Y + (Y == 0) or select(C, X, X == 0)
+signed-div.wat a signed div or rem
+unreachable.wat unreachable
+wgsl-div.wgsl a div or rem whose divisor is not a nonzero literal

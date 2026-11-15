@@ -9,6 +9,7 @@
 
 #include "front/ast.h"
 #include "front/base.h"
+#include "front/jointr.h"
 
 #define EVAL_DEPTH_LIMIT 2000u
 #define EVAL_FUEL_STEPS 20000000u
@@ -386,6 +387,7 @@ typedef struct {
   /* Set by the lowering (Q-S8-13): a neutral path at an end keeps the
      path for every endpoint value, so its trap flag reaches the result. */
   int keep_ends;
+  int lower_wgsl; /* 1 while lower_program lowers for the WGSL back end (Q-S8-27) */
   /* Each rTable that the checker admitted, one row for each def (S4 C6). */
   TableRow *tables;
   uint32_t table_count;
@@ -452,6 +454,10 @@ int val_is(const Value *v, Op op);
 const Env *env_push(Machine *m, const Env *env, const Value *value);
 const Value *def_value(Machine *m, uint32_t index);
 const Value *eval_core(Machine *m, const Env *env, const Core *core);
+
+/* The table of the transferVerify rows V for the lowering (eval.c, Q-S8-30): 2 when V is not closed, 0 on a bad
+   table, else 1 with *T and *NM set (the host table). */
+int eval_tr_table(const Machine *m, JrTable *t, uint32_t *nm, const Value *v);
 const Value *apply_value(Machine *m, const Value *fn, const Value *arg);
 /* transp LINE PHI BASE, for JSON rule 1 (S3b). LINE is a path value in U. */
 const Value *val_transp(Machine *m, const Value *line, const Value *phi, const Value *base);

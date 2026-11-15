@@ -1,0 +1,52 @@
+-- issueVerify on Wasm, ES and WGSL (tranche-lang S8 C3). The 2 keys, the 2
+-- Ct and the 10 proof words are constants, because issueProve and nonceOf
+-- do not lower. The values are the issue pair of examples/trkit.lang (x_o
+-- 17, x_h 11, r_o 47, r_i 53) at m = 7 and at m = 0. A proof holds a, b and
+-- z for each Ct. Each entry puts its input x in one place: vz, vm8 and vm0
+-- in the last z, va and vn9 in the x of the first a, vn11 after the last
+-- word, vko and vkh in the 2 coordinates of a key, and vc in the x of the
+-- first Ct point.
+def ko : CPoint :=
+  pair 0xdefdea4cdb677750a420fee807eacf21eb9898ae79b9768766e4faa04a2d4a34u 0x4211ab0694635168e997b0ead2a93daeced1f4a04a95c0f6cfb199f69e56eb77u
+
+def kh : CPoint :=
+  pair 0x774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cbu 0xd984a032eb6b5e190243dd56d7b7b365372db1e2dff9d6a8301d74c9c953c61bu
+
+def co : Ct :=
+  ctOf (pair 0x77f230936ee88cbbd73df930d64702ef881d811e0e1498e2f1c13eb1fc345d74u 0x958ef42a7886b6400a08266e9ba1b37896c95330d97077cbbe8eb3c7671c60d6u) (pair 0x8baa17c25b59c2b160dadcc1fe588423d4f37c8154fa287b59ce13b5c34cdcb2u 0xba08ac6f4e30f943cbb6105369b7333168cda5e6edfc6d6080d25c4dc07a6f3fu)
+
+def ci : Ct :=
+  ctOf (pair 0xf16f804244e46e2a09232d4aff3b59976b98fac14328a2d1a32496b49998f247u 0xcedabd9b82203f7e13d206fcdf4e33d92a6c53c26e5cce26d6579962c4e31df6u) (pair 0xcaf1a859f50955cbc1f77fa1da212f98cbf347cbafa755c730ed548502d8a344u 0x4284f31ef7ae5d28309180a1516edabdbdc841d4e85e39793a9f13107bb34412u)
+
+def co0 : Ct :=
+  ctOf (pair 0x77f230936ee88cbbd73df930d64702ef881d811e0e1498e2f1c13eb1fc345d74u 0x958ef42a7886b6400a08266e9ba1b37896c95330d97077cbbe8eb3c7671c60d6u) (pair 0xb94e2fe041ce209b6efd77d7449831300af90945120b9a5805427966e93eee4au 0x8f7abf1103e92f55dcb1dde746df10da86bfb8d2776a0f01d07142dc9bca443u)
+
+def ci0 : Ct :=
+  ctOf (pair 0xf16f804244e46e2a09232d4aff3b59976b98fac14328a2d1a32496b49998f247u 0xcedabd9b82203f7e13d206fcdf4e33d92a6c53c26e5cce26d6579962c4e31df6u) (pair 0xfbafe7fd7836b42751cf897c5d42897c7650ade8ee1ed01fe0d7dd2caac549c5u 0x2f51194352d07e517b7841f58eda5225229a7e289a453aeb5e70110e12668436u)
+
+def vz : (x : U256) -> Option Flag :=
+  fun (x : U256) => issueVerify ko kh (pair co ci) (unitsOf 7) (cons 0x4d848c01746bb07174367e7291755600eb6cf2a201f243fbe0d9014e41479bf7u (cons 0x3628e1ecc50b8278c1bb5043a283407f92c42aa4cf43e92e7a09f33b3f3e26d1u (cons 0x1f84d01419d3f8ac4cea222b28254de8fe3429df2f105fa34ff9dcea01fb6a5u (cons 0xb2aeba2ad543add5ae5ed9d461c32c3a953765b7cf18137855e58633dccad857u (cons 0x22ec82b9d2edce8bc3027469cc24e272f98961e4b7d3b235bcd1df61b1c60cb7u (cons 0x76f6acfedfbd8bfd53a47817c540ee0ff92cc8389d29a9d9f0a695154fb0b558u (cons 0xdaceaee0cfc2660b5241ea77f5bfc549efe3a05a872afc6a21ea7961ef4f7e31u (cons 0x2fa2271b7abf45529919caac5ec5417d55daa40ab93b83754c99eb1f1d75aebdu (cons 0x73a57244c8703b0a1795dd044748ad73d389ded43c2b88618901dc098a8394deu (cons x nil))))))))))
+
+def va : (x : U256) -> Option Flag :=
+  fun (x : U256) => issueVerify ko kh (pair co ci) (unitsOf 7) (cons x (cons 0x3628e1ecc50b8278c1bb5043a283407f92c42aa4cf43e92e7a09f33b3f3e26d1u (cons 0x1f84d01419d3f8ac4cea222b28254de8fe3429df2f105fa34ff9dcea01fb6a5u (cons 0xb2aeba2ad543add5ae5ed9d461c32c3a953765b7cf18137855e58633dccad857u (cons 0x22ec82b9d2edce8bc3027469cc24e272f98961e4b7d3b235bcd1df61b1c60cb7u (cons 0x76f6acfedfbd8bfd53a47817c540ee0ff92cc8389d29a9d9f0a695154fb0b558u (cons 0xdaceaee0cfc2660b5241ea77f5bfc549efe3a05a872afc6a21ea7961ef4f7e31u (cons 0x2fa2271b7abf45529919caac5ec5417d55daa40ab93b83754c99eb1f1d75aebdu (cons 0x73a57244c8703b0a1795dd044748ad73d389ded43c2b88618901dc098a8394deu (cons 0x17c97f599f81a663190b3636262ffa91b163c10ce79963ff51277a174820c0e5u nil))))))))))
+
+def vm8 : (x : U256) -> Option Flag :=
+  fun (x : U256) => issueVerify ko kh (pair co ci) (unitsOf 8) (cons 0x4d848c01746bb07174367e7291755600eb6cf2a201f243fbe0d9014e41479bf7u (cons 0x3628e1ecc50b8278c1bb5043a283407f92c42aa4cf43e92e7a09f33b3f3e26d1u (cons 0x1f84d01419d3f8ac4cea222b28254de8fe3429df2f105fa34ff9dcea01fb6a5u (cons 0xb2aeba2ad543add5ae5ed9d461c32c3a953765b7cf18137855e58633dccad857u (cons 0x22ec82b9d2edce8bc3027469cc24e272f98961e4b7d3b235bcd1df61b1c60cb7u (cons 0x76f6acfedfbd8bfd53a47817c540ee0ff92cc8389d29a9d9f0a695154fb0b558u (cons 0xdaceaee0cfc2660b5241ea77f5bfc549efe3a05a872afc6a21ea7961ef4f7e31u (cons 0x2fa2271b7abf45529919caac5ec5417d55daa40ab93b83754c99eb1f1d75aebdu (cons 0x73a57244c8703b0a1795dd044748ad73d389ded43c2b88618901dc098a8394deu (cons x nil))))))))))
+
+def vm0 : (x : U256) -> Option Flag :=
+  fun (x : U256) => issueVerify ko kh (pair co0 ci0) (unitsOf 0) (cons 0xd7c13ad9a78ae99aae7aa78d8fee0ad1098719d7a9d51f6e565778f6dc92fcaau (cons 0xb138ffd6f84e4e6674e0eeb8b7c7009f0e79343c073740aa111e803bee10b647u (cons 0xf1010bff6f7d43b848da611de7b8d59e84f7a849b826d41aed50a91415138bd9u (cons 0xf8235b918a926dfda2ff26e1a34b6b9dbae14e19948cb4d4f53f875669727e82u (cons 0xb68bf99c5584c4b16d87e5129445af04888690ca68f3161ed8e86cf734c6dcabu (cons 0xf007e1b05d8edb186e2a12cfb19a3c423acaa7a9a0487b5a6bc83b64f3a6cc68u (cons 0x257821e8907a3960df9dda2d3c44f4780edd5b475ac6d77338adb41ead64dfe2u (cons 0xd269595dbedd050e8fc6c6b4c70cce27de6e95370614ce926c8fcaa937090560u (cons 0x1be60714cb9c91c33174c4e23181f616c4035ee1708fa42b2a3378b87b5de978u (cons x nil))))))))))
+
+def vn9 : (x : U256) -> Option Flag :=
+  fun (x : U256) => issueVerify ko kh (pair co ci) (unitsOf 7) (cons x (cons 0x3628e1ecc50b8278c1bb5043a283407f92c42aa4cf43e92e7a09f33b3f3e26d1u (cons 0x1f84d01419d3f8ac4cea222b28254de8fe3429df2f105fa34ff9dcea01fb6a5u (cons 0xb2aeba2ad543add5ae5ed9d461c32c3a953765b7cf18137855e58633dccad857u (cons 0x22ec82b9d2edce8bc3027469cc24e272f98961e4b7d3b235bcd1df61b1c60cb7u (cons 0x76f6acfedfbd8bfd53a47817c540ee0ff92cc8389d29a9d9f0a695154fb0b558u (cons 0xdaceaee0cfc2660b5241ea77f5bfc549efe3a05a872afc6a21ea7961ef4f7e31u (cons 0x2fa2271b7abf45529919caac5ec5417d55daa40ab93b83754c99eb1f1d75aebdu (cons 0x73a57244c8703b0a1795dd044748ad73d389ded43c2b88618901dc098a8394deu nil)))))))))
+
+def vn11 : (x : U256) -> Option Flag :=
+  fun (x : U256) => issueVerify ko kh (pair co ci) (unitsOf 7) (cons 0x4d848c01746bb07174367e7291755600eb6cf2a201f243fbe0d9014e41479bf7u (cons 0x3628e1ecc50b8278c1bb5043a283407f92c42aa4cf43e92e7a09f33b3f3e26d1u (cons 0x1f84d01419d3f8ac4cea222b28254de8fe3429df2f105fa34ff9dcea01fb6a5u (cons 0xb2aeba2ad543add5ae5ed9d461c32c3a953765b7cf18137855e58633dccad857u (cons 0x22ec82b9d2edce8bc3027469cc24e272f98961e4b7d3b235bcd1df61b1c60cb7u (cons 0x76f6acfedfbd8bfd53a47817c540ee0ff92cc8389d29a9d9f0a695154fb0b558u (cons 0xdaceaee0cfc2660b5241ea77f5bfc549efe3a05a872afc6a21ea7961ef4f7e31u (cons 0x2fa2271b7abf45529919caac5ec5417d55daa40ab93b83754c99eb1f1d75aebdu (cons 0x73a57244c8703b0a1795dd044748ad73d389ded43c2b88618901dc098a8394deu (cons 0x17c97f599f81a663190b3636262ffa91b163c10ce79963ff51277a174820c0e5u (cons x nil)))))))))))
+
+def vko : (x : U256) -> Option Flag :=
+  fun (x : U256) => issueVerify (pair x x) kh (pair co ci) (unitsOf 7) (cons 0x4d848c01746bb07174367e7291755600eb6cf2a201f243fbe0d9014e41479bf7u (cons 0x3628e1ecc50b8278c1bb5043a283407f92c42aa4cf43e92e7a09f33b3f3e26d1u (cons 0x1f84d01419d3f8ac4cea222b28254de8fe3429df2f105fa34ff9dcea01fb6a5u (cons 0xb2aeba2ad543add5ae5ed9d461c32c3a953765b7cf18137855e58633dccad857u (cons 0x22ec82b9d2edce8bc3027469cc24e272f98961e4b7d3b235bcd1df61b1c60cb7u (cons 0x76f6acfedfbd8bfd53a47817c540ee0ff92cc8389d29a9d9f0a695154fb0b558u (cons 0xdaceaee0cfc2660b5241ea77f5bfc549efe3a05a872afc6a21ea7961ef4f7e31u (cons 0x2fa2271b7abf45529919caac5ec5417d55daa40ab93b83754c99eb1f1d75aebdu (cons 0x73a57244c8703b0a1795dd044748ad73d389ded43c2b88618901dc098a8394deu (cons 0x17c97f599f81a663190b3636262ffa91b163c10ce79963ff51277a174820c0e5u nil))))))))))
+
+def vkh : (x : U256) -> Option Flag :=
+  fun (x : U256) => issueVerify ko (pair x x) (pair co ci) (unitsOf 7) (cons 0x4d848c01746bb07174367e7291755600eb6cf2a201f243fbe0d9014e41479bf7u (cons 0x3628e1ecc50b8278c1bb5043a283407f92c42aa4cf43e92e7a09f33b3f3e26d1u (cons 0x1f84d01419d3f8ac4cea222b28254de8fe3429df2f105fa34ff9dcea01fb6a5u (cons 0xb2aeba2ad543add5ae5ed9d461c32c3a953765b7cf18137855e58633dccad857u (cons 0x22ec82b9d2edce8bc3027469cc24e272f98961e4b7d3b235bcd1df61b1c60cb7u (cons 0x76f6acfedfbd8bfd53a47817c540ee0ff92cc8389d29a9d9f0a695154fb0b558u (cons 0xdaceaee0cfc2660b5241ea77f5bfc549efe3a05a872afc6a21ea7961ef4f7e31u (cons 0x2fa2271b7abf45529919caac5ec5417d55daa40ab93b83754c99eb1f1d75aebdu (cons 0x73a57244c8703b0a1795dd044748ad73d389ded43c2b88618901dc098a8394deu (cons 0x17c97f599f81a663190b3636262ffa91b163c10ce79963ff51277a174820c0e5u nil))))))))))
+
+def vc : (x : U256) -> Option Flag :=
+  fun (x : U256) => issueVerify ko kh (pair (ctOf (pair x 0x958ef42a7886b6400a08266e9ba1b37896c95330d97077cbbe8eb3c7671c60d6u) (pair 0x8baa17c25b59c2b160dadcc1fe588423d4f37c8154fa287b59ce13b5c34cdcb2u 0xba08ac6f4e30f943cbb6105369b7333168cda5e6edfc6d6080d25c4dc07a6f3fu)) ci) (unitsOf 7) (cons 0x4d848c01746bb07174367e7291755600eb6cf2a201f243fbe0d9014e41479bf7u (cons 0x3628e1ecc50b8278c1bb5043a283407f92c42aa4cf43e92e7a09f33b3f3e26d1u (cons 0x1f84d01419d3f8ac4cea222b28254de8fe3429df2f105fa34ff9dcea01fb6a5u (cons 0xb2aeba2ad543add5ae5ed9d461c32c3a953765b7cf18137855e58633dccad857u (cons 0x22ec82b9d2edce8bc3027469cc24e272f98961e4b7d3b235bcd1df61b1c60cb7u (cons 0x76f6acfedfbd8bfd53a47817c540ee0ff92cc8389d29a9d9f0a695154fb0b558u (cons 0xdaceaee0cfc2660b5241ea77f5bfc549efe3a05a872afc6a21ea7961ef4f7e31u (cons 0x2fa2271b7abf45529919caac5ec5417d55daa40ab93b83754c99eb1f1d75aebdu (cons 0x73a57244c8703b0a1795dd044748ad73d389ded43c2b88618901dc098a8394deu (cons 0x17c97f599f81a663190b3636262ffa91b163c10ce79963ff51277a174820c0e5u nil))))))))))

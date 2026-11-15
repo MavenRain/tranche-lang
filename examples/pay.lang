@@ -89,8 +89,18 @@ def wdBig : U256 := 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cu
 def wdRange : Path (Except (Prod Measure Instruction)) (withdrawOut covP wdM0 (makeWithdraw wdF0 wdBig nil 0u 0u 0)) (exFail (Prod Measure Instruction) outOfRange) :=
   refl
 
+-- The entry of wdRange (S8 C5, Q-S8-38 (a)): flagYes when the result is
+-- exFail outOfRange.
+def wdRangeOk : Flag :=
+  elim (fun (e : Except (Prod Measure Instruction)) => Flag) (fun (o : Prod Measure Instruction) => flagNo) (fun (f : Fail) => elim (fun (v : Fail) => Flag) flagNo flagNo flagNo flagNo flagNo flagNo flagNo flagNo flagYes flagNo flagNo flagNo f) (withdrawOut covP wdM0 (makeWithdraw wdF0 wdBig nil 0u 0u 0))
+
 def wdLim : Path (Except (Prod Measure Instruction)) (withdrawOut covP wdM0 (makeWithdraw wdF0 limA nil 0u 0u 0)) (exFail (Prod Measure Instruction) outOfRange) :=
   refl
+
+-- The entry of wdLim (S8 C5, Q-S8-38 (a)): flagYes when the result is
+-- exFail outOfRange.
+def wdLimOk : Flag :=
+  elim (fun (e : Except (Prod Measure Instruction)) => Flag) (fun (o : Prod Measure Instruction) => flagNo) (fun (f : Fail) => elim (fun (v : Fail) => Flag) flagNo flagNo flagNo flagNo flagNo flagNo flagNo flagNo flagYes flagNo flagNo flagNo f) (withdrawOut covP wdM0 (makeWithdraw wdF0 limA nil 0u 0u 0))
 
 -- The kit pair (the r2 open point): withdrawProve then withdrawVerify on
 -- bal = Enc(3 2^32; 37) under x_h 11 and w = 2 gives flagYes. REST is 2^32.
@@ -115,8 +125,18 @@ def wdMFull : Measure :=
 def s9Full : Path (Except (Prod Measure U256)) (distribute fD0 wdMFull (inflowOf rent 1u)) (exFail (Prod Measure U256) full) :=
   refl
 
+-- The entry of s9Full (S8 C5, Q-S8-38 (a)): flagYes when the result is
+-- exFail full.
+def s9FullOk : Flag :=
+  elim (fun (e : Except (Prod Measure U256)) => Flag) (fun (p : Prod Measure U256) => flagNo) (fun (f : Fail) => elim (fun (v : Fail) => Flag) flagNo flagNo flagNo flagNo flagNo flagNo flagNo flagNo flagNo flagYes flagNo flagNo f) (distribute fD0 wdMFull (inflowOf rent 1u))
+
 def s9Zero : Path (Except (Prod Measure U256)) (distribute fD0 wdM0 (inflowOf rent 1u)) (exEta (Prod Measure U256) (pair wdM0 4294967296u)) :=
   refl
+
+-- The entry of s9Zero (S8 C5, Q-S8-38 (a)): flagYes when res A is 4294967296u,
+-- the distributed word is 0u and the supply is 0u.
+def s9ZeroOk : Flag :=
+  elim (fun (e : Except (Prod Measure U256)) => Flag) (fun (p : Prod Measure U256) => flagIf (u256Eq (second p) 4294967296u) (flagIf (u256Eq (distributed (first p)) 0u) (u256Eq (unitsU (supply (first p))) 0u) flagNo) flagNo) (fun (f : Fail) => flagNo) (distribute fD0 wdM0 (inflowOf rent 1u))
 
 def wdM3 : Measure := pair (fmUnit Holding) (pair (unitsOf 3) 0u)
 
@@ -124,6 +144,11 @@ def l6Claim : Path (Option U256) (claim 1u wdM3) (some 1431655765u) := refl
 
 def l6Round : Path (Except (Prod Measure U256)) (distribute fD0 wdM3 (inflowOf rent 1u)) (exEta (Prod Measure U256) (pair (pair (fmUnit Holding) (pair (unitsOf 3) 1u)) 1u)) :=
   refl
+
+-- The entry of l6Round (S8 C5, Q-S8-38 (a)): flagYes when res A is 1u,
+-- the distributed word is 1u and the supply is 3u.
+def l6RoundOk : Flag :=
+  elim (fun (e : Except (Prod Measure U256)) => Flag) (fun (p : Prod Measure U256) => flagIf (u256Eq (second p) 1u) (flagIf (u256Eq (distributed (first p)) 1u) (u256Eq (unitsU (supply (first p))) 3u) flagNo) flagNo) (fun (f : Fail) => flagNo) (distribute fD0 wdM3 (inflowOf rent 1u))
 
 def l6Sum : Path (Option U256) (bind (u256Mul 1431655765u 3u) (fun (t : U256) => u256Add t 1u)) (some twoP) :=
   refl

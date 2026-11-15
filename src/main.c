@@ -41,6 +41,7 @@ typedef struct {
   const char *script_path;
   const char *out_path;
   int js; /* --js OUT: the ES module in place of the target (S9 B2) */
+  int js_count; /* --js-count OUT: --js in the count mode (Q-S8-32); gate rows only, not in the usage */
   int wgsl; /* --wgsl OUT: the WGSL compute module in place of the target (S10 B2) */
   int runtime;
   int json;
@@ -95,15 +96,18 @@ static int find_command(const char *word, Command *out) {
 static int parse_build_options(int argc, char **argv, Options *opt, Diag *diag) {
   int outs = 0;
   opt->js = 0;
+  opt->js_count = 0;
   opt->wgsl = 0;
   for (int i = 3; i < argc; i++) {
-    int is_js = strcmp(argv[i], "--js") == 0;
+    int is_count = strcmp(argv[i], "--js-count") == 0;
+    int is_js = strcmp(argv[i], "--js") == 0 || is_count;
     int is_wgsl = strcmp(argv[i], "--wgsl") == 0;
     int is_out = (strcmp(argv[i], "-o") == 0 || is_js || is_wgsl) && i + 1 < argc;
     int is_runtime = strcmp(argv[i], "--runtime") == 0;
     if (!is_out && !is_runtime) return diag_fail(diag, "USAGE", NULL, "unknown build argument '%s'", argv[i]);
     opt->out_path = is_out ? argv[i + 1] : opt->out_path;
     opt->js = is_out ? is_js : opt->js;
+    opt->js_count = is_out ? is_count : opt->js_count;
     opt->wgsl = is_out ? is_wgsl : opt->wgsl;
     outs += is_out;
     opt->runtime |= is_runtime;
@@ -274,7 +278,7 @@ static int run_target(const Options *opt, Machine *machine, Diag *diag) {
   FILE *out;
   int ok = 1;
   if (opt->command == CMD_ABI) return print_abi(machine, opt->json, opt->out, opt->err);
-  if (!lower_program(machine, &prog, opt->err)) return 1;
+  if (!lower_program(machine, &prog, opt->err, opt->wgsl)) return 1;
   switch (opt->command) {
     case CMD_IR:
       ir_print(&prog, opt->out);
@@ -293,6 +297,7 @@ static int run_target(const Options *opt, Machine *machine, Diag *diag) {
   out = fopen(opt->out_path, "wb");
   if (out == NULL) return diag_fail(diag, "IO", NULL, "cannot write '%s'", opt->out_path) + 2;
   ok = opt->wgsl ? wgsl_write(&prog, out, opt->err)
+       : opt->js_count ? js_write_count(&prog, out, opt->err)
        : opt->js ? js_write(&prog, out, opt->err)
                  : target_write(&prog, opt->runtime ? TARGET_PART_RUNTIME : TARGET_PART_MAIN, out, opt->err);
   ok = fclose(out) == 0 && ok;
@@ -437,7 +442,7 @@ static int check_json(const Options *opt, Arena *arena, const char *text, size_t
   memset(&machine, 0, sizeof machine);
   int ok = front_load(arena, opt->prog_path, text, len, &decls, diag)
       && check_program_progress(arena, &decls, &machine, diag, opt->mode, &progress)
-      && lower_program(&machine, &prog, NULL);
+      && lower_program(&machine, &prog, NULL, 0);
   bounds = ok ? arena_alloc(arena, (prog.func_count + 1u) * sizeof *bounds) : NULL;
   ok = ok && (bounds != NULL || diag_fail(diag, "OOM", NULL, "out of memory"));
   for (i = 0; ok && i < prog.func_count; i++)

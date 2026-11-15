@@ -1,0 +1,1401 @@
+/* The no-trap checker (PLAN N4, S8 C2: a port of lien-lang
+   test/notraptool.c). It reads each Wasm module that langc builds and fails
+   on each form that can trap:
+   - unreachable, call_indirect, memory.grow, each float op (the trunc ops
+     too), each 0xFC or 0xFD prefix op, a signed div or rem;
+   - an unsigned div or rem whose divisor is not one of these forms (each
+     gives a divisor that is never 0):
+     `local.get X; local.get X; eqz; [i64.extend_i32_u;] or`, X | (X == 0);
+     `Y; local.get T; i64.add`, where local T holds Y == 0 (src/wasm.c
+     emit_op IR_OP_DIV and IR_OP_MOD, src/front/lower.c ex_divisor);
+     `C; X; X; i64.eqz; select` with C not 0 (emit_op IR_OP_MUL_CARRY);
+   - a load or store in a module with no memory;
+   - a memory with max != min (N3), a data segment past the memory, an
+     element section, a call-graph cycle (N2).
+   The tool has no rule for the address of a load or store (Q-S8-12): the N8
+   heap bound and the wasmtool heap row are the bound check. It keeps the
+   stack height of each body as the validator does. It does not check the
+   types: run it after wasm-validate.
+
+   Usage: notraptool MODULE.wasm...
+   Prints one FAIL line for each trap form, then `notrap: P of N`: P of the
+   N modules checked have no trap form. Exit 0: no trap form. Exit 1: a trap
+   form. Exit 2: usage, IO or a module that does not decode.
+   notraptool --js MODULE.mjs...: the ES mode. It fails on each `throw`, and
+   on each `/` or `%` whose divisor can be 0 (see es_check), then prints
+   `notrap js: P of N`.
+   notraptool --wgsl MODULE.wgsl...: the WGSL mode. It fails on each `/` or
+   `%` whose divisor is not a nonzero literal (see wgsl_check), then prints
+   `notrap wgsl: P of N`.
+   notraptool --self-test: checks the bad modules in this file (byte arrays,
+   then ES text, then WGSL text) and prints `NAME: REASON` for each
+   (test/notrap/expect.txt). */
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define MAX_TYPES 4096u
+#define MAX_FUNCS 16384u
+#define MAX_EDGES (1u << 20)
+#define MAX_STACK 16384u
+#define MAX_FRAMES 4096u
+#define MAX_MODULE (256u << 20)
+#define PAGE_BYTES 65536u
+#define MAX_GUARDS 64u
+#define DIV_FORM "a div or rem whose divisor is not X | (X == 0), Y + (Y == 0) or select(C, X, X == 0)"
+
+typedef enum { RUN_OK, RUN_TRAP, RUN_BAD } Run;
+
+typedef struct {
+  const uint8_t *p;
+  size_t end;
+  size_t at;
+} Reader;
+
+typedef struct {
+  uint32_t params;
+  uint32_t results;
+} FuncType;
+
+/* A stack value. bound = 1: the value is at most max. The tool has no
+   address rule (Q-S8-12), so no check reads the bound. */
+typedef struct {
+  int bound;
+  uint64_t max;
+} Slot;
+
+typedef struct {
+  size_t base; /* the stack height under the block */
+  uint32_t params;
+  uint32_t results;
+  int dead; /* 1: after br, br_table or return; the stack is polymorphic */
+} Frame;
+
+typedef struct {
+  uint8_t op;
+  uint32_t imm;
+  uint64_t value; /* the value of an i64.const */
+} Past;
+
+/* A guard: local T holds Y == 0 (lower.c ex_divisor), Y the local.get or
+   the i64.const y. */
+typedef struct {
+  uint32_t local;
+  uint8_t kind; /* 0x20 or 0x42 */
+  uint64_t y;
+} Guard;
+
+typedef struct {
+  FuncType types[MAX_TYPES];
+  uint32_t type_count;
+  uint32_t func_type[MAX_FUNCS];
+  uint32_t func_count; /* the imported and the defined functions */
+  uint32_t import_funcs;
+  int has_memory;
+  uint64_t memory_bytes;
+  uint32_t edge_from[MAX_EDGES]; /* calls between defined functions (indices without the imports) */
+  uint32_t edge_to[MAX_EDGES];
+  size_t edge_count;
+  uint32_t start[MAX_FUNCS + 1u];
+  uint32_t fill[MAX_FUNCS];
+  uint32_t in_degree[MAX_FUNCS];
+  uint32_t queue[MAX_FUNCS];
+  uint32_t next[MAX_EDGES];
+  Slot stack[MAX_STACK];
+  size_t height;
+  Frame frames[MAX_FRAMES];
+  size_t depth;
+  Past past[5]; /* past[0] is the last instruction */
+  Guard guards[MAX_GUARDS]; /* the Y == 0 locals of the Y + T divisors */
+  size_t guard_count;
+  uint64_t value; /* the value of the last i64.const */
+  const char *why;
+  const char *file;
+  int quiet;
+  char reason[160]; /* the first trap form */
+  unsigned long fails;
+} Check;
+
+static Check state;
+
+static int get_byte(Reader *r, uint8_t *out) {
+  if (r->at >= r->end) return 0;
+  *out = r->p[r->at];
+  r->at++;
+  return 1;
+}
+
+static int skip_bytes(Reader *r, uint32_t n) {
+  if (n > r->end - r->at) return 0;
+  r->at += n;
+  return 1;
+}
+
+/* An unsigned LEB128 of at most 32 bits. */
+static int get_u32(Reader *r, uint32_t *out) {
+  uint64_t value = 0;
+  unsigned shift = 0;
+  uint8_t b = 0x80;
+  while ((b & 0x80) != 0) {
+    if (shift > 28u || !get_byte(r, &b)) return 0;
+    value |= (uint64_t)(b & 0x7F) << shift;
+    shift += 7u;
+  }
+  if (value > 0xFFFFFFFFu) return 0;
+  *out = (uint32_t)value;
+  return 1;
+}
+
+/* A signed LEB128 of at most BITS bits (32, 33 or 64). */
+static int get_signed(Reader *r, unsigned bits, int64_t *out) {
+  uint64_t value = 0;
+  unsigned shift = 0;
+  uint8_t b = 0x80;
+  while ((b & 0x80) != 0) {
+    if (shift >= 7u * ((bits + 6u) / 7u) || !get_byte(r, &b)) return 0;
+    value |= (uint64_t)(b & 0x7F) << shift;
+    shift += 7u;
+  }
+  if (shift < 64u && (b & 0x40) != 0) value |= ~(uint64_t)0 << shift;
+  *out = (int64_t)value;
+  return 1;
+}
+
+static int skip_name(Reader *r) {
+  uint32_t n;
+  return get_u32(r, &n) && skip_bytes(r, n);
+}
+
+static int get_limits(Reader *r, uint32_t *min, uint32_t *max, int *has_max) {
+  uint8_t flag;
+  if (!get_byte(r, &flag) || flag > 1u || !get_u32(r, min)) return 0;
+  *has_max = flag == 1u;
+  *max = *min;
+  return flag == 0u || get_u32(r, max);
+}
+
+static Run trap_form(Check *c, long func, size_t at, const char *why) {
+  c->fails++;
+  if (c->reason[0] == '\0') snprintf(c->reason, sizeof c->reason, "%s", why);
+  if (c->quiet) return RUN_TRAP;
+  if (func < 0)
+    printf("FAIL notrap %s: %s\n", c->file, why);
+  else
+    printf("FAIL notrap %s: func %ld at byte %lu: %s\n", c->file, func, (unsigned long)at, why);
+  return RUN_TRAP;
+}
+
+static Run trap(Check *c, const char *why) {
+  c->why = why;
+  return RUN_TRAP;
+}
+
+static Run ok_if(int ok) {
+  if (ok) return RUN_OK;
+  return RUN_BAD;
+}
+
+static int push(Check *c, int bound, uint64_t max) {
+  if (c->height >= MAX_STACK) return 0;
+  c->stack[c->height].bound = bound;
+  c->stack[c->height].max = max;
+  c->height++;
+  return 1;
+}
+
+/* Below the block base the stack is polymorphic after br, br_table or
+   return: that code never runs, so its value passes each check. */
+static int pop(Check *c, Slot *out) {
+  const Frame *f = &c->frames[c->depth - 1u];
+  if (c->height > f->base) {
+    c->height--;
+    *out = c->stack[c->height];
+    return 1;
+  }
+  out->bound = 1;
+  out->max = 0;
+  return f->dead;
+}
+
+static int effect(Check *c, uint32_t in, uint32_t out) {
+  Slot s;
+  uint32_t i;
+  for (i = 0; i < in; i++)
+    if (!pop(c, &s)) return 0;
+  for (i = 0; i < out; i++)
+    if (!push(c, 0, 0)) return 0;
+  return 1;
+}
+
+static int enter(Check *c, uint32_t params, uint32_t results) {
+  Frame *f;
+  if (c->depth >= MAX_FRAMES || !effect(c, params, 0)) return 0;
+  f = &c->frames[c->depth];
+  f->base = c->height;
+  f->params = params;
+  f->results = results;
+  f->dead = 0;
+  c->depth++;
+  return effect(c, 0, params);
+}
+
+static int otherwise(Check *c) {
+  Frame *f = &c->frames[c->depth - 1u];
+  c->height = f->base;
+  f->dead = 0;
+  return effect(c, 0, f->params);
+}
+
+static int leave(Check *c) {
+  uint32_t results = c->frames[c->depth - 1u].results;
+  c->height = c->frames[c->depth - 1u].base;
+  c->depth--;
+  return effect(c, 0, results);
+}
+
+static int stop(Check *c) {
+  Frame *f = &c->frames[c->depth - 1u];
+  c->height = f->base;
+  f->dead = 1;
+  return 1;
+}
+
+static int block_type(Check *c, Reader *r, uint32_t *params, uint32_t *results) {
+  int64_t index;
+  uint8_t b;
+  *params = 0;
+  *results = 0;
+  if (r->at >= r->end) return 0;
+  b = r->p[r->at];
+  if (b == 0x40) return skip_bytes(r, 1);
+  *results = 1;
+  if (b == 0x7F || b == 0x7E || b == 0x7D || b == 0x7C || b == 0x7B || b == 0x70 || b == 0x6F) return skip_bytes(r, 1);
+  if (!get_signed(r, 33, &index) || index < 0 || (uint64_t)index >= c->type_count) return 0;
+  *params = c->types[index].params;
+  *results = c->types[index].results;
+  return 1;
+}
+
+static unsigned load_width(uint8_t op) {
+  switch (op) {
+    case 0x2C:
+    case 0x2D:
+    case 0x30:
+    case 0x31:
+      return 1;
+    case 0x2E:
+    case 0x2F:
+    case 0x32:
+    case 0x33:
+      return 2;
+    case 0x28:
+    case 0x34:
+    case 0x35:
+      return 4;
+    case 0x29:
+      return 8;
+    default:
+      return 0;
+  }
+}
+
+static unsigned store_width(uint8_t op) {
+  switch (op) {
+    case 0x3A:
+    case 0x3C:
+      return 1;
+    case 0x3B:
+    case 0x3D:
+      return 2;
+    case 0x36:
+    case 0x3E:
+      return 4;
+    case 0x37:
+      return 8;
+    default:
+      return 0;
+  }
+}
+
+static int is_float(uint8_t op) {
+  return op == 0x2A || op == 0x2B || op == 0x38 || op == 0x39 || op == 0x43 || op == 0x44 ||
+         (op >= 0x5B && op <= 0x66) || (op >= 0x8B && op <= 0xA6) || (op >= 0xA8 && op <= 0xAB) ||
+         (op >= 0xAE && op <= 0xBF);
+}
+
+/* The inputs of an integer op with one result: 1 or 2; 0 for any other op. */
+static unsigned plain_inputs(uint8_t op) {
+  if (op == 0x45 || op == 0x50 || (op >= 0x67 && op <= 0x69) || (op >= 0x79 && op <= 0x7B) || op == 0xA7 ||
+      op == 0xAC || op == 0xAD || (op >= 0xC0 && op <= 0xC4))
+    return 1;
+  if ((op >= 0x46 && op <= 0x4F) || (op >= 0x51 && op <= 0x5A) || (op >= 0x6A && op <= 0x78) ||
+      (op >= 0x7C && op <= 0x8A))
+    return 2;
+  return 0;
+}
+
+/* The divisor idiom: local.get X; local.get X; eqz; [i64.extend_i32_u;] or. */
+static int idiom(const Check *c, int wide) {
+  const Past *p = c->past;
+  if (wide)
+    return p[0].op == 0x84 && p[1].op == 0xAD && p[2].op == 0x50 && p[3].op == 0x20 && p[4].op == 0x20 &&
+           p[3].imm == p[4].imm;
+  return p[0].op == 0x72 && p[1].op == 0x45 && p[2].op == 0x20 && p[3].op == 0x20 && p[2].imm == p[3].imm;
+}
+
+/* x & y is at most each operand that has a bound. */
+static uint64_t tighter(Slot a, Slot b) {
+  if (a.bound && b.bound && b.max < a.max) return b.max;
+  if (a.bound) return a.max;
+  return b.max;
+}
+
+/* A write of local W ends each guard on W, as T or as Y. */
+static void forget(Check *c, uint32_t w) {
+  size_t i, kept = 0;
+  for (i = 0; i < c->guard_count; i++)
+    if (c->guards[i].local != w && !(c->guards[i].kind == 0x20 && c->guards[i].y == w))
+      c->guards[kept++] = c->guards[i];
+  c->guard_count = kept;
+}
+
+/* local.set T after Y; i64.const 0; i64.eq; i64.extend_i32_u (or Y;
+   i64.eqz; i64.extend_i32_u), Y a local.get other than T or an
+   i64.const: T holds Y == 0. With a full table the guard is not kept, so
+   its divisor fails (never a false ok). */
+static void guard(Check *c, uint32_t t) {
+  const Past *p = c->past;
+  const Past *y = NULL;
+  if (p[0].op == 0xAD && p[1].op == 0x51 && p[2].op == 0x42 && p[2].value == 0u) y = &p[3];
+  if (p[0].op == 0xAD && p[1].op == 0x50) y = &p[2];
+  if (y == NULL || !(y->op == 0x20 || y->op == 0x42) || (y->op == 0x20 && y->imm == t) ||
+      c->guard_count >= MAX_GUARDS)
+    return;
+  c->guards[c->guard_count].local = t;
+  c->guards[c->guard_count].kind = y->op;
+  c->guards[c->guard_count].y = y->op == 0x20 ? y->imm : y->value;
+  c->guard_count++;
+}
+
+/* The tranche divisors (wasm.c emit_op): Y; local.get T; i64.add with a
+   guard T on the same Y (IR_OP_DIV, IR_OP_MOD), or C; X; X; i64.eqz;
+   select with C not 0 (IR_OP_MUL_CARRY). */
+static int guarded(const Check *c) {
+  const Past *p = c->past;
+  size_t i;
+  if (p[0].op == 0x1B)
+    return p[1].op == 0x50 && p[2].op == 0x20 && p[3].op == 0x20 && p[2].imm == p[3].imm && p[4].op == 0x42 &&
+           p[4].value != 0u;
+  if (p[0].op != 0x7C || p[1].op != 0x20 || !(p[2].op == 0x20 || p[2].op == 0x42)) return 0;
+  for (i = 0; i < c->guard_count; i++)
+    if (c->guards[i].local == p[1].imm && c->guards[i].kind == p[2].op &&
+        c->guards[i].y == (p[2].op == 0x20 ? p[2].imm : p[2].value))
+      return 1;
+  return 0;
+}
+
+static Run access(Check *c, Reader *r, int store) {
+  uint32_t align, offset;
+  Slot value, address;
+  if (!get_u32(r, &align) || !get_u32(r, &offset) || (store && !pop(c, &value)) || !pop(c, &address))
+    return RUN_BAD;
+  /* No address rule (Q-S8-12): the N8 heap bound and the wasmtool heap row
+     bound each access. */
+  if (!c->has_memory) return trap(c, "a load or store without a memory");
+  return ok_if(store || push(c, 0, 0));
+}
+
+static int edge(Check *c, uint32_t from, uint32_t to) {
+  if (to < c->import_funcs) return 1;
+  if (c->edge_count >= MAX_EDGES) return 0;
+  c->edge_from[c->edge_count] = from - c->import_funcs;
+  c->edge_to[c->edge_count] = to - c->import_funcs;
+  c->edge_count++;
+  return 1;
+}
+
+static Run instruction(Check *c, Reader *r, uint8_t op, uint32_t *imm, uint32_t func) {
+  Slot a, b;
+  uint32_t params, results, count, k, label;
+  unsigned width;
+  int64_t value;
+  uint8_t byte;
+  const FuncType *t;
+  switch (op) {
+    case 0x00:
+      return trap(c, "unreachable");
+    case 0x01:
+      return RUN_OK;
+    case 0x02:
+    case 0x03:
+      return ok_if(block_type(c, r, &params, &results) && enter(c, params, results));
+    case 0x04:
+      return ok_if(pop(c, &a) && block_type(c, r, &params, &results) && enter(c, params, results));
+    case 0x05:
+      return ok_if(otherwise(c));
+    case 0x0B:
+      return ok_if(leave(c));
+    case 0x0C:
+      return ok_if(get_u32(r, imm) && stop(c));
+    case 0x0D:
+      return ok_if(get_u32(r, imm) && pop(c, &a));
+    case 0x0E:
+      if (!get_u32(r, &count)) return RUN_BAD;
+      for (k = 0; k <= count; k++)
+        if (!get_u32(r, &label)) return RUN_BAD;
+      return ok_if(pop(c, &a) && stop(c));
+    case 0x0F:
+      return ok_if(stop(c));
+    case 0x10:
+      if (!get_u32(r, imm) || *imm >= c->func_count || !edge(c, func, *imm)) return RUN_BAD;
+      t = &c->types[c->func_type[*imm]];
+      return ok_if(effect(c, t->params, t->results));
+    case 0x11:
+      return trap(c, "call_indirect");
+    case 0x1A:
+      return ok_if(pop(c, &a));
+    case 0x1B:
+      return ok_if(effect(c, 3, 1));
+    case 0x1C:
+      if (!get_u32(r, &count)) return RUN_BAD;
+      for (k = 0; k < count; k++)
+        if (!get_byte(r, &byte)) return RUN_BAD;
+      return ok_if(effect(c, 3, 1));
+    case 0x20:
+    case 0x23:
+      return ok_if(get_u32(r, imm) && push(c, 0, 0));
+    case 0x24:
+      return ok_if(get_u32(r, imm) && pop(c, &a));
+    case 0x21:
+      if (!get_u32(r, imm) || !pop(c, &a)) return RUN_BAD;
+      forget(c, *imm);
+      guard(c, *imm);
+      return RUN_OK;
+    case 0x22:
+      if (!get_u32(r, imm) || !pop(c, &a)) return RUN_BAD;
+      forget(c, *imm);
+      return ok_if(push(c, a.bound, a.max));
+    case 0x3F:
+      return ok_if(get_byte(r, &byte) && push(c, 0, 0));
+    case 0x40:
+      return trap(c, "memory.grow");
+    case 0x41:
+      return ok_if(get_signed(r, 32, &value) && push(c, 1, (uint64_t)(uint32_t)value));
+    case 0x42:
+      if (!get_signed(r, 64, &value)) return RUN_BAD;
+      c->value = (uint64_t)value;
+      return ok_if(push(c, 0, 0));
+    case 0x6D:
+    case 0x6F:
+    case 0x7F:
+    case 0x81:
+      return trap(c, "a signed div or rem");
+    case 0x6E:
+    case 0x70:
+    case 0x80:
+    case 0x82:
+      if (!idiom(c, op >= 0x80) && !(op >= 0x80 && guarded(c))) return trap(c, DIV_FORM);
+      return ok_if(effect(c, 2, 1));
+    case 0x71:
+      if (!pop(c, &b) || !pop(c, &a)) return RUN_BAD;
+      return ok_if(push(c, a.bound || b.bound, tighter(a, b)));
+    case 0xFC:
+    case 0xFD:
+      return trap(c, "a 0xFC or 0xFD prefix op");
+    default:
+      break;
+  }
+  width = load_width(op);
+  if (width > 0u) return access(c, r, 0);
+  width = store_width(op);
+  if (width > 0u) return access(c, r, 1);
+  if (is_float(op)) return trap(c, "a float op");
+  width = plain_inputs(op);
+  if (width > 0u) return ok_if(effect(c, width, 1));
+  return RUN_BAD; /* not an MVP opcode */
+}
+
+static Run check_body(Check *c, Reader *r, uint32_t func) {
+  const FuncType *t = &c->types[c->func_type[func]];
+  uint32_t groups, n, i;
+  uint8_t type;
+  if (!get_u32(r, &groups)) return RUN_BAD;
+  for (i = 0; i < groups; i++)
+    if (!get_u32(r, &n) || !get_byte(r, &type)) return RUN_BAD;
+  c->height = 0;
+  c->depth = 1;
+  c->frames[0].base = 0;
+  c->frames[0].params = 0;
+  c->frames[0].results = t->results;
+  c->frames[0].dead = 0;
+  c->guard_count = 0;
+  for (i = 0; i < 5u; i++) {
+    c->past[i].op = 0xFF;
+    c->past[i].imm = 0;
+    c->past[i].value = 0;
+  }
+  while (c->depth > 0u) {
+    size_t at = r->at;
+    uint8_t op;
+    uint32_t imm = 0;
+    Run run;
+    if (!get_byte(r, &op)) return RUN_BAD;
+    c->value = 0;
+    if (op == 0x02 || op == 0x03 || op == 0x04 || op == 0x05 || op == 0x0B) c->guard_count = 0; /* no guard over a label */
+    run = instruction(c, r, op, &imm, func);
+    if (run == RUN_TRAP) return trap_form(c, (long)func, at, c->why);
+    if (run == RUN_BAD) return RUN_BAD;
+    for (i = 4; i > 0u; i--) c->past[i] = c->past[i - 1u];
+    c->past[0].op = op;
+    c->past[0].imm = imm;
+    c->past[0].value = c->value;
+  }
+  return ok_if(r->at == r->end);
+}
+
+/* Kahn: the call graph of the defined functions has no cycle (N2). */
+static int acyclic(Check *c) {
+  uint32_t count = c->func_count - c->import_funcs;
+  uint32_t i, k, head = 0, tail = 0;
+  size_t e;
+  for (e = 0; e < c->edge_count; e++) {
+    c->start[c->edge_from[e] + 1u]++;
+    c->in_degree[c->edge_to[e]]++;
+  }
+  for (i = 0; i < count; i++) {
+    c->start[i + 1u] += c->start[i];
+    c->fill[i] = c->start[i];
+  }
+  for (e = 0; e < c->edge_count; e++) {
+    c->next[c->fill[c->edge_from[e]]] = c->edge_to[e];
+    c->fill[c->edge_from[e]]++;
+  }
+  for (i = 0; i < count; i++)
+    if (c->in_degree[i] == 0u) c->queue[tail++] = i;
+  while (head < tail) {
+    uint32_t u = c->queue[head++];
+    for (k = c->start[u]; k < c->start[u + 1u]; k++) {
+      c->in_degree[c->next[k]]--;
+      if (c->in_degree[c->next[k]] == 0u) c->queue[tail++] = c->next[k];
+    }
+  }
+  return tail == count;
+}
+
+static Run memory_limits(Check *c, Reader *r) {
+  uint32_t min, max;
+  int has_max;
+  if (!get_limits(r, &min, &max, &has_max)) return RUN_BAD;
+  c->has_memory = 1;
+  c->memory_bytes = (uint64_t)min * PAGE_BYTES;
+  if (!has_max || max != min) return trap_form(c, -1, 0, "a memory whose max is not its min (N3)");
+  return RUN_OK;
+}
+
+static Run types(Check *c, Reader *s) {
+  uint32_t count, k, params, results;
+  uint8_t form;
+  if (!get_u32(s, &count) || count > MAX_TYPES) return RUN_BAD;
+  for (k = 0; k < count; k++) {
+    if (!get_byte(s, &form) || form != 0x60 || !get_u32(s, &params) || !skip_bytes(s, params) ||
+        !get_u32(s, &results) || !skip_bytes(s, results))
+      return RUN_BAD;
+    c->types[k].params = params;
+    c->types[k].results = results;
+  }
+  c->type_count = count;
+  return RUN_OK;
+}
+
+static Run imports(Check *c, Reader *s) {
+  uint32_t count, k, index, min, max;
+  uint8_t kind, b;
+  int has_max;
+  if (!get_u32(s, &count)) return RUN_BAD;
+  for (k = 0; k < count; k++) {
+    if (!skip_name(s) || !skip_name(s) || !get_byte(s, &kind)) return RUN_BAD;
+    switch (kind) {
+      case 0:
+        if (!get_u32(s, &index) || index >= c->type_count || c->func_count >= MAX_FUNCS) return RUN_BAD;
+        c->func_type[c->func_count] = index;
+        c->func_count++;
+        c->import_funcs++;
+        break;
+      case 1:
+        if (!get_byte(s, &b) || !get_limits(s, &min, &max, &has_max)) return RUN_BAD;
+        break;
+      case 2:
+        if (memory_limits(c, s) == RUN_BAD) return RUN_BAD;
+        break;
+      case 3:
+        if (!get_byte(s, &b) || !get_byte(s, &b)) return RUN_BAD;
+        break;
+      default:
+        return RUN_BAD;
+    }
+  }
+  return RUN_OK;
+}
+
+static Run functions(Check *c, Reader *s, uint32_t *defined) {
+  uint32_t count, k, index;
+  if (!get_u32(s, &count) || count > MAX_FUNCS - c->func_count) return RUN_BAD;
+  for (k = 0; k < count; k++) {
+    if (!get_u32(s, &index) || index >= c->type_count) return RUN_BAD;
+    c->func_type[c->func_count] = index;
+    c->func_count++;
+  }
+  *defined = count;
+  return RUN_OK;
+}
+
+static Run tables(Reader *s) {
+  uint32_t count, k, min, max;
+  uint8_t type;
+  int has_max;
+  if (!get_u32(s, &count)) return RUN_BAD;
+  for (k = 0; k < count; k++)
+    if (!get_byte(s, &type) || !get_limits(s, &min, &max, &has_max)) return RUN_BAD;
+  return RUN_OK;
+}
+
+static Run memories(Check *c, Reader *s) {
+  uint32_t count, k;
+  if (!get_u32(s, &count)) return RUN_BAD;
+  for (k = 0; k < count; k++)
+    if (memory_limits(c, s) == RUN_BAD) return RUN_BAD;
+  return RUN_OK;
+}
+
+static int const_expr(Reader *r) {
+  uint8_t op = 0;
+  int64_t value;
+  uint32_t index;
+  while (op != 0x0B) {
+    if (!get_byte(r, &op)) return 0;
+    switch (op) {
+      case 0x0B:
+        break;
+      case 0x41:
+        if (!get_signed(r, 32, &value)) return 0;
+        break;
+      case 0x42:
+        if (!get_signed(r, 64, &value)) return 0;
+        break;
+      case 0x43:
+        if (!skip_bytes(r, 4)) return 0;
+        break;
+      case 0x44:
+        if (!skip_bytes(r, 8)) return 0;
+        break;
+      case 0x23:
+        if (!get_u32(r, &index)) return 0;
+        break;
+      default:
+        return 0;
+    }
+  }
+  return 1;
+}
+
+static Run globals(Reader *s) {
+  uint32_t count, k;
+  uint8_t type, mut;
+  if (!get_u32(s, &count)) return RUN_BAD;
+  for (k = 0; k < count; k++)
+    if (!get_byte(s, &type) || !get_byte(s, &mut) || !const_expr(s)) return RUN_BAD;
+  return RUN_OK;
+}
+
+static Run exports(Reader *s) {
+  uint32_t count, k, index;
+  uint8_t kind;
+  if (!get_u32(s, &count)) return RUN_BAD;
+  for (k = 0; k < count; k++)
+    if (!skip_name(s) || !get_byte(s, &kind) || !get_u32(s, &index)) return RUN_BAD;
+  return RUN_OK;
+}
+
+static Run code(Check *c, Reader *s, uint32_t defined) {
+  uint32_t count, k, size;
+  if (!get_u32(s, &count) || count != defined) return RUN_BAD;
+  for (k = 0; k < count; k++) {
+    Reader body;
+    if (!get_u32(s, &size) || size > s->end - s->at) return RUN_BAD;
+    body.p = s->p;
+    body.at = s->at;
+    body.end = s->at + size;
+    s->at += size;
+    if (check_body(c, &body, c->import_funcs + k) == RUN_BAD) return RUN_BAD;
+  }
+  return RUN_OK;
+}
+
+static Run data(Check *c, Reader *s) {
+  uint32_t count, k, flag, memory, length;
+  int64_t offset;
+  uint8_t b;
+  if (!get_u32(s, &count)) return RUN_BAD;
+  for (k = 0; k < count; k++) {
+    offset = 0;
+    if (!get_u32(s, &flag) || flag > 2u || (flag == 2u && !get_u32(s, &memory))) return RUN_BAD;
+    if (flag != 1u &&
+        (!get_byte(s, &b) || b != 0x41 || !get_signed(s, 32, &offset) || !get_byte(s, &b) || b != 0x0B))
+      return trap_form(c, -1, 0, "a data segment offset that is not i32.const");
+    if (!get_u32(s, &length) || !skip_bytes(s, length)) return RUN_BAD;
+    if (flag != 1u && (!c->has_memory || (uint64_t)(uint32_t)offset + length > c->memory_bytes))
+      trap_form(c, -1, 0, "a data segment past the memory");
+  }
+  return RUN_OK;
+}
+
+static Run check_module(Check *c, const uint8_t *p, size_t n) {
+  static const uint8_t magic[8] = {0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00};
+  Reader r;
+  uint32_t defined = 0, size, index;
+  int has_code = 0;
+  if (n < 8u || memcmp(p, magic, 8) != 0) return RUN_BAD;
+  r.p = p;
+  r.at = 8;
+  r.end = n;
+  while (r.at < r.end) {
+    Reader s;
+    uint8_t id;
+    Run run = RUN_OK;
+    if (!get_byte(&r, &id) || !get_u32(&r, &size) || size > r.end - r.at) return RUN_BAD;
+    s.p = p;
+    s.at = r.at;
+    s.end = r.at + size;
+    r.at += size;
+    switch (id) {
+      case 0:
+        break;
+      case 1:
+        run = types(c, &s);
+        break;
+      case 2:
+        run = imports(c, &s);
+        break;
+      case 3:
+        run = functions(c, &s, &defined);
+        break;
+      case 4:
+        run = tables(&s);
+        break;
+      case 5:
+        run = memories(c, &s);
+        break;
+      case 6:
+        run = globals(&s);
+        break;
+      case 7:
+        run = exports(&s);
+        break;
+      case 8:
+        run = ok_if(get_u32(&s, &index));
+        break;
+      case 9:
+        run = trap_form(c, -1, 0, "an element section");
+        break;
+      case 10:
+        has_code = 1;
+        run = code(c, &s, defined);
+        break;
+      case 11:
+        run = data(c, &s);
+        break;
+      case 12:
+        run = ok_if(get_u32(&s, &index));
+        break;
+      default:
+        run = RUN_BAD;
+        break;
+    }
+    if (run == RUN_BAD) return RUN_BAD;
+  }
+  if (defined > 0u && !has_code) return RUN_BAD;
+  if (!acyclic(c)) trap_form(c, -1, 0, "a call-graph cycle (N2)");
+  if (c->fails > 0u) return RUN_TRAP;
+  return RUN_OK;
+}
+
+/* The self-test: small modules as byte arrays. */
+
+typedef struct {
+  uint8_t b[512];
+  size_t n;
+} Buf;
+
+static void put(Buf *o, uint8_t v) {
+  if (o->n < sizeof o->b) o->b[o->n] = v;
+  o->n++;
+}
+
+static void put_u32(Buf *o, uint32_t v) {
+  uint8_t b;
+  do {
+    b = (uint8_t)(v & 0x7Fu);
+    v >>= 7;
+    put(o, v != 0u ? (uint8_t)(b | 0x80u) : b);
+  } while (v != 0u);
+}
+
+/* A signed LEB128 of a value that is not negative. */
+static void put_s32(Buf *o, uint32_t v) {
+  uint8_t b;
+  int more = 1;
+  while (more) {
+    b = (uint8_t)(v & 0x7Fu);
+    v >>= 7;
+    more = v != 0u || (b & 0x40u) != 0u;
+    put(o, more ? (uint8_t)(b | 0x80u) : b);
+  }
+}
+
+static void put_bytes(Buf *o, const uint8_t *p, size_t n) {
+  size_t i;
+  for (i = 0; i < n; i++) put(o, p[i]);
+}
+
+static void put_section(Buf *o, uint8_t id, const Buf *s) {
+  put(o, id);
+  put_u32(o, (uint32_t)s->n);
+  put_bytes(o, s->b, s->n);
+}
+
+typedef struct {
+  const char *name;
+  const uint8_t *body[2]; /* the code of each function: the locals, the instructions, end */
+  size_t size[2];
+  uint32_t funcs;
+  uint32_t min, max;           /* the memory pages */
+  uint32_t data_at, data_size; /* data_size 0: no data section */
+} Case;
+
+/* store x at (x & 65528), load at (x & 65528), divide by x | (x == 0). The
+   i64.const 0 has a 2-byte immediate (0x80 0x00; 0x80 is the i64.div_u
+   opcode), and the block has a br: a tool that does not skip an immediate
+   or a label fails here. */
+static const uint8_t good[] = {0x00, 0x42, 0x80, 0x00, 0x1A, 0x02, 0x40, 0x0C, 0x00, 0x0B, 0x20, 0x00, 0xA7,
+                               0x41, 0xF8, 0xFF, 0x03, 0x71, 0x20, 0x00, 0x37, 0x03, 0x00, 0x20, 0x00, 0xA7,
+                               0x41, 0xF8, 0xFF, 0x03, 0x71, 0x29, 0x03, 0x00, 0x20, 0x00, 0x20, 0x00, 0x50,
+                               0xAD, 0x84, 0x80, 0x0B};
+static const uint8_t c_unreachable[] = {0x00, 0x00, 0x0B};
+static const uint8_t c_grow[] = {0x00, 0x41, 0x01, 0x40, 0x00, 0x1A, 0x20, 0x00, 0x0B};
+static const uint8_t c_indirect[] = {0x00, 0x20, 0x00, 0x41, 0x00, 0x11, 0x00, 0x00, 0x0B};
+static const uint8_t c_float[] = {0x00, 0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0xB0, 0x0B};
+static const uint8_t c_prefix[] = {0x00, 0x20, 0x00, 0xFC, 0x00, 0x0B};
+static const uint8_t c_signed[] = {0x00, 0x20, 0x00, 0x20, 0x00, 0x7F, 0x0B};
+static const uint8_t c_div[] = {0x00, 0x20, 0x00, 0x20, 0x00, 0x80, 0x0B};
+static const uint8_t c_div_two[] = {0x01, 0x01, 0x7E, 0x20, 0x00, 0x20, 0x00, 0x20, 0x01, 0x50, 0xAD, 0x84, 0x80, 0x0B};
+static const uint8_t c_rem32[] = {0x00, 0x20, 0x00, 0xA7, 0x20, 0x00, 0xA7, 0x70, 0xAD, 0x0B};
+static const uint8_t c_call0[] = {0x00, 0x20, 0x00, 0x10, 0x00, 0x0B};
+static const uint8_t c_call1[] = {0x00, 0x20, 0x00, 0x10, 0x01, 0x0B};
+/* The tranche divisors (wasm.c emit_op): Y + T after T = (Y == 0), Y a
+   local or a constant, and select(C, X, X == 0). A write of Y, a label or
+   another Y ends the guard. */
+static const uint8_t c_div_guard[] = {0x01, 0x01, 0x7E, 0x20, 0x00, 0x42, 0x00, 0x51, 0xAD, 0x21, 0x01, 0x20, 0x00,
+                                      0x20, 0x00, 0x20, 0x01, 0x7C, 0x80, 0x0B};
+static const uint8_t c_div_guard_const[] = {0x01, 0x01, 0x7E, 0x42, 0x02, 0x42, 0x00, 0x51, 0xAD, 0x21, 0x01, 0x20,
+                                            0x00, 0x42, 0x02, 0x20, 0x01, 0x7C, 0x82, 0x0B};
+static const uint8_t c_div_guard_eqz[] = {0x01, 0x01, 0x7E, 0x20, 0x00, 0x50, 0xAD, 0x21, 0x01, 0x20, 0x00, 0x20, 0x00,
+                                          0x20, 0x01, 0x7C, 0x80, 0x0B};
+static const uint8_t c_div_guard_stale[] = {0x01, 0x01, 0x7E, 0x20, 0x00, 0x42, 0x00, 0x51, 0xAD, 0x21, 0x01, 0x42,
+                                            0x00, 0x21, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x01, 0x7C, 0x80, 0x0B};
+static const uint8_t c_div_guard_other[] = {0x01, 0x01, 0x7E, 0x42, 0x02, 0x42, 0x00, 0x51, 0xAD, 0x21, 0x01, 0x20,
+                                            0x00, 0x42, 0x03, 0x20, 0x01, 0x7C, 0x80, 0x0B};
+static const uint8_t c_div_guard_loop[] = {0x01, 0x01, 0x7E, 0x20, 0x00, 0x42, 0x00, 0x51, 0xAD, 0x21, 0x01, 0x03, 0x40,
+                                           0x0B, 0x20, 0x00, 0x20, 0x00, 0x20, 0x01, 0x7C, 0x80, 0x0B};
+static const uint8_t c_div_select[] = {0x00, 0x20, 0x00, 0x42, 0x01, 0x20, 0x00, 0x20, 0x00, 0x50, 0x1B, 0x80, 0x0B};
+static const uint8_t c_div_select_zero[] = {0x00, 0x20, 0x00, 0x42, 0x00, 0x20, 0x00, 0x20, 0x00, 0x50, 0x1B, 0x80,
+                                            0x0B};
+
+#define ONE(name, body) {name, {body, NULL}, {sizeof body, 0}, 1u, 1u, 1u, 0u, 0u}
+
+static const Case cases[] = {
+    ONE("good", good),
+    {"good_call", {c_call1, good}, {sizeof c_call1, sizeof good}, 2u, 1u, 1u, 0u, 0u},
+    ONE("unreachable", c_unreachable),
+    ONE("memory_grow", c_grow),
+    ONE("call_indirect", c_indirect),
+    ONE("float", c_float),
+    ONE("prefix", c_prefix),
+    ONE("signed_div", c_signed),
+    ONE("div_no_idiom", c_div),
+    ONE("div_two_locals", c_div_two),
+    ONE("rem32_no_idiom", c_rem32),
+    ONE("div_guard", c_div_guard),
+    ONE("div_guard_const", c_div_guard_const),
+    ONE("div_guard_eqz", c_div_guard_eqz),
+    ONE("div_guard_stale", c_div_guard_stale),
+    ONE("div_guard_other", c_div_guard_other),
+    ONE("div_guard_loop", c_div_guard_loop),
+    ONE("div_select", c_div_select),
+    ONE("div_select_zero", c_div_select_zero),
+    {"memory_max", {good, NULL}, {sizeof good, 0}, 1u, 1u, 2u, 0u, 0u},
+    {"data_past_memory", {good, NULL}, {sizeof good, 0}, 1u, 1u, 1u, 65530u, 8u},
+    ONE("self_call", c_call0),
+    {"call_cycle", {c_call1, c_call0}, {sizeof c_call1, sizeof c_call0}, 2u, 1u, 1u, 0u, 0u},
+};
+
+/* type 0 = (i64) -> i64 for each function, one memory, the code, then an
+   optional data segment of zero bytes. */
+static void build(const Case *k, Buf *o) {
+  static const uint8_t head[8] = {0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00};
+  static const uint8_t type[6] = {0x01, 0x60, 0x01, 0x7E, 0x01, 0x7E};
+  Buf s;
+  uint32_t i;
+  o->n = 0;
+  put_bytes(o, head, sizeof head);
+  s.n = 0;
+  put_bytes(&s, type, sizeof type);
+  put_section(o, 1, &s);
+  s.n = 0;
+  put_u32(&s, k->funcs);
+  for (i = 0; i < k->funcs; i++) put(&s, 0);
+  put_section(o, 3, &s);
+  s.n = 0;
+  put(&s, 1);
+  put(&s, 1);
+  put_u32(&s, k->min);
+  put_u32(&s, k->max);
+  put_section(o, 5, &s);
+  s.n = 0;
+  put_u32(&s, k->funcs);
+  for (i = 0; i < k->funcs; i++) {
+    put_u32(&s, (uint32_t)k->size[i]);
+    put_bytes(&s, k->body[i], k->size[i]);
+  }
+  put_section(o, 10, &s);
+  if (k->data_size == 0u) return;
+  s.n = 0;
+  put(&s, 1);
+  put(&s, 0);
+  put(&s, 0x41);
+  put_s32(&s, k->data_at);
+  put(&s, 0x0B);
+  put_u32(&s, k->data_size);
+  for (i = 0; i < k->data_size; i++) put(&s, 0);
+  put_section(o, 11, &s);
+}
+
+/* The ES mode (S8 C2, N4). A module that `langc build --js` writes has no
+   throw (src/js.c emit_switch puts `default:` on the last arm), and each `/`
+   or `%` has a divisor that is never 0:
+   - a decimal literal that is not 0 (`64`, `4n`);
+   - `P` or `SC_N`;
+   - `nz(X)`, where X is one name or literal;
+   - b in the src/js.c prelude functions wDiv and wMod: each caller passes
+     Y + (Y == 0) (src/front/lower.c ex_divisor);
+   - m in the prelude function powMod: each powMod call ends in P or N (see
+     es_powmod_call).
+   A `**`, `.`, `[` or `(` after the divisor makes it not safe. The scan skips
+   the comments and the '...' and "..." strings. A template literal is a FAIL:
+   src/js.c writes none, and the scan does not read into it. A `/` that starts
+   a regular expression is read as a division (src/js.c writes none). */
+#define ES_THROW "a throw"
+#define ES_DIV "a / whose divisor can be 0"
+#define ES_REM "a % whose divisor can be 0"
+#define ES_TEMPLATE "a template literal"
+#define ES_OPEN "an open string or comment"
+#define ES_POWMOD "a powMod call whose modulus is not P or N"
+#define WGSL_DIV "a div or rem whose divisor is not a nonzero literal"
+
+typedef struct {
+  const char *file;
+  int quiet;
+  unsigned long fails;
+  const char *reason;
+  const char *top; /* the name of the top-level const that the scan is in */
+  size_t top_n;
+} EsCheck;
+
+typedef struct {
+  const char *name;
+  const char *text;
+} EsCase;
+
+static int es_name_char(char ch) {
+  return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
+         ch == '_' || ch == '$';
+}
+
+/* The length of the name or number at p (0 if p has none). */
+static size_t es_word(const char *p, size_t n) {
+  size_t k = 0;
+  while (k < n && es_name_char(p[k])) k++;
+  return k;
+}
+
+static size_t es_space(const char *p, size_t n, size_t k) {
+  while (k < n && (p[k] == ' ' || p[k] == '\t' || p[k] == '\n' || p[k] == '\r')) k++;
+  return k;
+}
+
+/* 1 if the w bytes at p are [1-9][0-9]*, then an optional n. */
+static int es_nonzero_literal(const char *p, size_t w) {
+  size_t j;
+  if (w == 0u || p[0] < '1' || p[0] > '9') return 0;
+  for (j = 1; j < w; j++)
+    if (!((p[j] >= '0' && p[j] <= '9') || (p[j] == 'n' && j + 1u == w))) return 0;
+  return 1;
+}
+
+/* 1 if the divisor at p is safe (see the ES mode above). */
+static int es_safe_divisor(const char *p, size_t n) {
+  size_t k = es_space(p, n, 0), w = es_word(p + k, n - k), end = k + w;
+  int safe = es_nonzero_literal(p + k, w) || (w == 1u && p[k] == 'P') ||
+             (w == 4u && memcmp(p + k, "SC_N", 4) == 0);
+  if (w == 2u && memcmp(p + k, "nz", 2) == 0) {
+    size_t a = es_space(p, n, end), x;
+    if (a < n && p[a] == '(') {
+      a = es_space(p, n, a + 1u);
+      x = es_word(p + a, n - a);
+      a = es_space(p, n, a + x);
+      if (x > 0u && a < n && p[a] == ')') {
+        safe = 1;
+        end = a + 1u;
+      }
+    }
+  }
+  end = es_space(p, n, end);
+  if (!safe || end >= n) return safe;
+  return !(p[end] == '.' || p[end] == '[' || p[end] == '(' ||
+           (p[end] == '*' && end + 1u < n && p[end + 1u] == '*'));
+}
+
+/* A word at column 0 starts a top-level form: e->top is its name if it is
+   a const, else none. */
+static void es_top(EsCheck *e, const char *p, size_t n, size_t i, size_t w) {
+  size_t a = es_space(p, n, i + w);
+  e->top = NULL;
+  e->top_n = 0;
+  if (w == 5u && memcmp(p + i, "const", 5) == 0) {
+    e->top = p + a;
+    e->top_n = es_word(p + a, n - a);
+  }
+}
+
+/* The tranche prelude divisors (src/js.c): b in wDiv and wMod (each caller
+   passes Y + (Y == 0), lower.c ex_divisor, N4) and m in powMod (each call
+   passes P or N, es_powmod_call). */
+static int es_prelude_divisor(const EsCheck *e, const char *p, size_t n) {
+  size_t k = es_space(p, n, 0), w = es_word(p + k, n - k), end = es_space(p, n, k + w);
+  int b = w == 1u && p[k] == 'b' && e->top_n == 4u &&
+          (memcmp(e->top, "wDiv", 4) == 0 || memcmp(e->top, "wMod", 4) == 0);
+  int m = w == 1u && p[k] == 'm' && e->top_n == 6u && memcmp(e->top, "powMod", 6) == 0;
+  return (b || m) && (end >= n || !(p[end] == '.' || p[end] == '[' || p[end] == '('));
+}
+
+/* 1 if p (after the word powMod) is not a call, or is a call whose last
+   argument is P or N. */
+static int es_powmod_call(const char *p, size_t n) {
+  size_t k = es_space(p, n, 0), j, last = 0;
+  unsigned depth = 0;
+  if (k >= n || p[k] != '(') return 1;
+  for (j = k; j < n; j++) {
+    if (p[j] == '(') depth++;
+    if (p[j] == ',' && depth == 1u) last = j + 1u;
+    if (p[j] == ')') {
+      depth--;
+      if (depth == 0u) break;
+    }
+  }
+  if (j >= n || last == 0u) return 0;
+  k = es_space(p, n, last);
+  return es_word(p + k, n - k) == 1u && (p[k] == 'P' || p[k] == 'N') && es_space(p, n, k + 1u) == j;
+}
+
+static void es_fail(EsCheck *e, unsigned long line, const char *why) {
+  if (e->fails == 0u) e->reason = why;
+  e->fails++;
+  if (!e->quiet) printf("FAIL notrap %s:%lu: %s\n", e->file, line, why);
+}
+
+/* Scans the text of one module. It stops at an open string or comment. */
+static void es_check(EsCheck *e, const char *p, size_t n) {
+  size_t i = 0;
+  unsigned long line = 1;
+  while (i < n) {
+    char ch = p[i];
+    char next = i + 1u < n ? p[i + 1u] : '\0';
+    if (ch == '\n') line++;
+    if (ch == '/' && next == '/') {
+      while (i < n && p[i] != '\n') i++;
+      continue;
+    }
+    if (ch == '/' && next == '*') {
+      unsigned long from = line;
+      i += 2u;
+      while (i + 1u < n && !(p[i] == '*' && p[i + 1u] == '/')) {
+        if (p[i] == '\n') line++;
+        i++;
+      }
+      if (i + 1u >= n) {
+        es_fail(e, from, ES_OPEN);
+        return;
+      }
+      i += 2u;
+      continue;
+    }
+    if (ch == '\'' || ch == '"') {
+      i++;
+      while (i < n && p[i] != ch && p[i] != '\n')
+        i += (p[i] == '\\' && i + 1u < n && p[i + 1u] != '\n') ? 2u : 1u;
+      if (i >= n || p[i] == '\n') {
+        es_fail(e, line, ES_OPEN);
+        return;
+      }
+      i++;
+      continue;
+    }
+    if (ch == '`') es_fail(e, line, ES_TEMPLATE);
+    if (ch == '/' || ch == '%') {
+      size_t at = next == '=' ? i + 2u : i + 1u;
+      if (!es_safe_divisor(p + at, n - at) && !es_prelude_divisor(e, p + at, n - at))
+        es_fail(e, line, ch == '/' ? ES_DIV : ES_REM);
+      i = at;
+      continue;
+    }
+    if (es_name_char(ch)) {
+      size_t w = es_word(p + i, n - i);
+      if (w == 5u && memcmp(p + i, "throw", 5) == 0) es_fail(e, line, ES_THROW);
+      if (i == 0u || p[i - 1u] == '\n') es_top(e, p, n, i, w);
+      if (w == 6u && memcmp(p + i, "powMod", 6) == 0 && !es_powmod_call(p + i + w, n - i - w))
+        es_fail(e, line, ES_POWMOD);
+      i += w;
+      continue;
+    }
+    i++;
+  }
+}
+
+static const EsCase es_cases[] = {
+    {"es_good", "// a throw, a / b and a % b in a comment\n/* throw; a / b */\n"
+                "const s = 'throw a / b' + \"a % b\" + 'it\\'s';\nconst throwaway = 1n;\n"
+                "const f = (a, b, q) => a / nz(b) + a % nz( q ) + a / 64 + a % 4n + a % P + a / SC_N;\n"
+                "let c = 8n;\nc /= 2n;\nc %= P;\n"},
+    {"es_throw", "const f = () => {\n  throw 1n;\n};\n"},
+    {"es_div", "const f = (a, b) => a / b;\n"},
+    {"es_rem", "const f = (a, b) => a % b;\n"},
+    {"es_div_assign", "let a = 8n;\na /= b;\n"},
+    {"es_zero", "const f = (a) => a / 0n;\n"},
+    {"es_name_prefix", "const f = (a) => a % Px;\n"},
+    {"es_nz_sum", "const f = (a, b) => a / nz(b + 1n);\n"},
+    {"es_power", "const f = (a, b) => a / 2n ** b;\n"},
+    {"es_template", "const s = `${a / b}`;\n"},
+    {"es_open_string", "const s = 'a / b;\n"},
+    {"es_open_comment", "/* a / b\n"},
+    {"es_prelude", "const wDiv = (a, b) => a / b;\nconst wMod = (a, b) => a % b;\n"
+     "const powMod = (b, e, m) => {\n  let r = 1n % m;\n  return (r * b) % m;\n};\n"
+     "const inv = (v) => powMod(v, P - 2n, P);\n"},
+    {"es_prelude_scope", "const wDiv = (a, b) => a / b;\nexport function f(a, b) {\n  return a / b;\n}\n"},
+    {"es_prelude_member", "const wDiv = (a, b) => a / b.x;\n"},
+    {"es_powmod_modulus", "const g = (v, q) => powMod(v, 2n, q);\n"},
+};
+
+/* The WGSL mode (S8 C2, N4). WGSL has no trap. src/wgsl.c has no trap flag
+   and no status 1 write, so this mode has no rule for them. Each `/` or `%`
+   (and `/=` or `%=`) must have a decimal literal divisor that is not 0:
+   `[1-9][0-9]*`, then an optional u or i, with no `.`, `[` or `(` after it
+   (USER 2026-11-03: literal only). src/wgsl.c divides only by 32u (a bit
+   index) and by the out row width (the entry guard); the word div and mod go
+   one bit at a time. The scan skips the comments and fails on each form. It
+   stops at an open comment. */
+static int wgsl_safe_divisor(const char *p, size_t n) {
+  size_t k = es_space(p, n, 0), w = es_word(p + k, n - k), end = es_space(p, n, k + w), j;
+  if (w == 0u || p[k] < '1' || p[k] > '9') return 0;
+  for (j = 1; j < w; j++)
+    if (!((p[k + j] >= '0' && p[k + j] <= '9') || ((p[k + j] == 'u' || p[k + j] == 'i') && j + 1u == w))) return 0;
+  return end >= n || !(p[end] == '.' || p[end] == '[' || p[end] == '(');
+}
+
+static void wgsl_check(EsCheck *e, const char *p, size_t n) {
+  size_t i = 0;
+  unsigned long line = 1;
+  while (i < n) {
+    char ch = p[i];
+    char next = i + 1u < n ? p[i + 1u] : '\0';
+    if (ch == '\n') line++;
+    if (ch == '/' && next == '/') {
+      while (i < n && p[i] != '\n') i++;
+      continue;
+    }
+    if (ch == '/' && next == '*') {
+      unsigned long from = line;
+      i += 2u;
+      while (i + 1u < n && !(p[i] == '*' && p[i + 1u] == '/')) {
+        if (p[i] == '\n') line++;
+        i++;
+      }
+      if (i + 1u >= n) {
+        es_fail(e, from, ES_OPEN);
+        return;
+      }
+      i += 2u;
+      continue;
+    }
+    if (ch == '/' || ch == '%') {
+      size_t at = next == '=' ? i + 2u : i + 1u;
+      if (!wgsl_safe_divisor(p + at, n - at)) es_fail(e, line, WGSL_DIV);
+      i = at;
+      continue;
+    }
+    if (es_name_char(ch)) {
+      size_t w = es_word(p + i, n - i);
+      i += w;
+      continue;
+    }
+    i++;
+  }
+}
+
+static const EsCase wgsl_cases[] = {
+    {"wgsl_good", "// tr = true; and f_out[ob] = 1u; in a comment\n/* tr */\nvar<private> trace: bool;\n"
+                  "fn f() {\n  f_out[ob] = 0u;\n  f_out[ob + 1u] = 1u;\n  let str = 1u;\n  g_in[ob] = 1u;\n}\n"
+                  "// a / b and a % 0u in a comment\n"
+                  "fn g(j: u32) -> u32 {\n  var x = j / 32u + j % 32u + 9 / 3i;\n  x /= 2u;\n  x %= 7u;\n"
+                  "  return arrayLength(&f_out) / 3u + x;\n}\n"},
+    {"wgsl_open_comment", "/* tr\n"},
+    {"wgsl_halts", "var<private> tr: bool;\nfn f() {\n  tr = true;\n  f_out[ob] = 2u;\n  f_out[ob] = 1u;\n}\n"},
+    {"wgsl_div", "fn f(a: u32, b: u32) -> u32 {\n  return a / b;\n}\n"},
+    {"wgsl_rem", "fn f(a: u32, b: u32) -> u32 {\n  return a % b;\n}\n"},
+    {"wgsl_zero", "fn f(a: u32) -> u32 {\n  return a / 0u;\n}\n"},
+    {"wgsl_rem_assign", "fn f(a: u32, b: u32) {\n  var x = a;\n  x %= b;\n}\n"},
+    {"wgsl_div_member", "fn f(a: u32) -> u32 {\n  return a / 2u.x;\n}\n"},
+};
+
+static const char *outcome(Run run, const Check *c) {
+  if (run == RUN_OK) return "ok";
+  if (run == RUN_TRAP) return c->reason;
+  return "the module does not decode";
+}
+
+static int self_test(void) {
+  size_t i;
+  for (i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+    Buf o;
+    Run run = RUN_BAD;
+    build(&cases[i], &o);
+    memset(&state, 0, sizeof state);
+    state.quiet = 1;
+    state.file = cases[i].name;
+    if (o.n <= sizeof o.b) run = check_module(&state, o.b, o.n);
+    printf("%s: %s\n", cases[i].name, outcome(run, &state));
+  }
+  for (i = 0; i < sizeof es_cases / sizeof es_cases[0]; i++) {
+    EsCheck e;
+    memset(&e, 0, sizeof e);
+    e.quiet = 1;
+    e.file = es_cases[i].name;
+    es_check(&e, es_cases[i].text, strlen(es_cases[i].text));
+    printf("%s: %s\n", es_cases[i].name, e.fails == 0u ? "ok" : e.reason);
+  }
+  for (i = 0; i < sizeof wgsl_cases / sizeof wgsl_cases[0]; i++) {
+    EsCheck e;
+    memset(&e, 0, sizeof e);
+    e.quiet = 1;
+    e.file = wgsl_cases[i].name;
+    wgsl_check(&e, wgsl_cases[i].text, strlen(wgsl_cases[i].text));
+    printf("%s: %s\n", wgsl_cases[i].name, e.fails == 0u ? "ok" : e.reason);
+  }
+  return 0;
+}
+
+static int read_file(const char *path, uint8_t **out, size_t *n) {
+  FILE *f = fopen(path, "rb");
+  uint8_t *buf = NULL;
+  size_t cap = 0, len = 0, got = 1;
+  if (f == NULL) return 0;
+  while (got > 0u) {
+    if (len == cap) {
+      uint8_t *grow;
+      cap = cap == 0u ? 65536u : cap * 2u;
+      grow = cap > MAX_MODULE ? NULL : realloc(buf, cap);
+      if (grow == NULL) {
+        free(buf);
+        fclose(f);
+        return 0;
+      }
+      buf = grow;
+    }
+    got = fread(buf + len, 1, cap - len, f);
+    len += got;
+  }
+  fclose(f);
+  *out = buf;
+  *n = len;
+  return 1;
+}
+
+/* The ES mode, or the WGSL mode when WGSL is 1. */
+static int es_main(int count, char **paths, int wgsl) {
+  int i, bad = 0;
+  unsigned long modules = 0, forms = 0, passed = 0;
+  if (count < 1) {
+    fprintf(stderr, wgsl ? "usage: notraptool --wgsl MODULE.wgsl...\n" : "usage: notraptool --js MODULE.mjs...\n");
+    return 2;
+  }
+  for (i = 0; i < count; i++) {
+    uint8_t *buf;
+    size_t n;
+    EsCheck e;
+    if (!read_file(paths[i], &buf, &n)) {
+      printf("FAIL notrap %s: cannot read the file\n", paths[i]);
+      bad = 1;
+      continue;
+    }
+    memset(&e, 0, sizeof e);
+    e.file = paths[i];
+    (wgsl ? wgsl_check : es_check)(&e, (const char *)buf, n);
+    free(buf);
+    modules++;
+    forms += e.fails;
+    if (e.fails == 0u) passed++;
+  }
+  printf("notrap %s: %lu of %lu\n", wgsl ? "wgsl" : "js", passed, modules);
+  if (bad) return 2;
+  if (forms > 0u) return 1;
+  return 0;
+}
+
+int main(int argc, char **argv) {
+  int i, bad = 0;
+  unsigned long modules = 0, forms = 0, passed = 0;
+  if (argc == 2 && strcmp(argv[1], "--self-test") == 0) return self_test();
+  if (argc >= 2 && strcmp(argv[1], "--js") == 0) return es_main(argc - 2, argv + 2, 0);
+  if (argc >= 2 && strcmp(argv[1], "--wgsl") == 0) return es_main(argc - 2, argv + 2, 1);
+  if (argc < 2) {
+    fprintf(stderr,
+            "usage: notraptool MODULE.wasm... | notraptool --js MODULE.mjs... | "
+            "notraptool --wgsl MODULE.wgsl... | "
+            "notraptool --self-test\n");
+    return 2;
+  }
+  for (i = 1; i < argc; i++) {
+    uint8_t *buf;
+    size_t n;
+    Run run;
+    if (!read_file(argv[i], &buf, &n)) {
+      printf("FAIL notrap %s: cannot read the file\n", argv[i]);
+      bad = 1;
+      continue;
+    }
+    memset(&state, 0, sizeof state);
+    state.file = argv[i];
+    run = check_module(&state, buf, n);
+    free(buf);
+    modules++;
+    forms += state.fails;
+    if (run == RUN_BAD) {
+      printf("FAIL notrap %s: the module does not decode\n", argv[i]);
+      bad = 1;
+    }
+    if (run != RUN_BAD && state.fails == 0u) passed++;
+  }
+  printf("notrap: %lu of %lu\n", passed, modules);
+  if (bad) return 2;
+  if (forms > 0u) return 1;
+  return 0;
+}

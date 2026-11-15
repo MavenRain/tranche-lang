@@ -18,12 +18,13 @@ and `langc build --wgsl` writes it to a WGSL module when its value is
 first-order at run time. Types and universes erase in the module. Proof
 contents erase, while their trap flags remain.
 
-`test/gate.sh` writes the WGSL module of each lowered example (`wgsl: 56
+`test/gate.sh` writes the WGSL module of each lowered example (`wgsl: 57
 modules written`). `make gpu-check` (outside the sandbox) runs the rows of
 each lowered example (`wgsl differential`) on the module in
 `build/wgsltool` (`test/wgsltool.c`, deno with WebGPU). Each row must print
 the same output as its Wasm row. It also runs the `test/ir` rows of `comb`,
-`lazy`, `spine`, `proof-trap` and `memname` (`test/ir wgsl`) against
+`lazy`, `spine`, `proof-trap`, `memname`, `issue-verify`,
+`attest-verify` and `bag1024` (`test/ir wgsl`) against
 `langc --kit eval`, and the rows of `test/wasm/hash.txt`,
 `test/wasm/secp.txt` and `test/wasm/traps.txt` on the module (`wgsl
 regressions`).
@@ -50,6 +51,6 @@ The HOST-LIMIT refusals (`REFUSE_RUNTIME_TREE`, `REFUSE_RUNTIME_CLOSURE`)
 come from `src/front/lower.c`, before a target writes the IR. Thus
 `build --wgsl` refuses the same programs as `build`. The F4, F6, F9 and F15
 notes of `formers/tcc-wasm.md` apply to the WGSL module too.
-The Metal backend does not compile 20 entries in 4 modules
-(`test/wgsl/internal.txt`; `docs/VALIDATION.md` V15; PLAN O31). No
-Evidence file of this table is in that list.
+`test/wgsl/internal.txt` names 14 entries in 2 modules, from the
+cairn-lang record of the Metal backend (`docs/VALIDATION.md` V15; PLAN
+O31). No Evidence file of this table is in that list.

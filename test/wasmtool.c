@@ -1,15 +1,20 @@
 /* The Wasm runner (cairn-lang S8, Q-S8-7): runs the entries of a langc module
    on the wasmtime C API and prints each result as `langc eval` does.
 
-   Usage: wasmtool MODULE.wasm ABI.txt
+   Usage: wasmtool MODULE.wasm ABI.txt [BOUNDS.json]
    ABI.txt is the output of `langc abi PROG --text`. Each stdin line is
    `NAME [ARGS...]`; each output line is a decimal Nat or Flag, a decimal U256
    and `u`, `trap` when the module traps, or `bad: REASON`. A U256 argument is
    decimal or 0x hex, then `u`; it goes to the entry as 4 i64, high limb first.
    A U256 result is the 32 bytes at address 0..31, low limb first (M8): any
    other address is `bad`. Each call runs in a new store, so a trap does not
-   reach the next call. An Option entry (ABI result `option[i32 status at 32]
-   R`) takes the status address 32 as one more i32; status 0 prints `none`.
+   reach the next call. Each entry writes its status word at address 32
+   (Q-S8-9): 0 prints `none` (an Option entry, ABI result `option[i32 status
+   at 32] R`), 1 a value, 2 `LIMIT`, 3 `ARG`; any other value is `bad`.
+   BOUNDS.json is the output of `langc check --json PROG`. With it, a call
+   whose heap pointer (the exported global `$heap`) ends past WASM_HEAP_START
+   + 8 * the `memory` words of its entry prints `bad: heap N is not in the
+   bound` (Q-S8-11).
    Exit 0: each call printed a line. Exit 2: usage, IO or
    a module that does not load. */
 #include <stdio.h>
@@ -24,6 +29,8 @@
 #define MAX_PARAMS 32
 #define MAX_NAME 128
 #define STATUS_AT 32 /* WASM_STATUS_AT of src/wasm.c */
+#define HEAP_START 40u /* WASM_HEAP_START of src/wasm.c */
+#define NO_STATUS 255u /* the entry writes no status (Q-S8-9) */
 
 typedef struct {
   char name[MAX_NAME];
@@ -31,11 +38,14 @@ typedef struct {
   int wide_param[MAX_PARAMS]; /* 1: a U256 (4 i64), 0: a Nat or Flag */
   int wide_result;            /* 1: a U256 at address 0 */
   int status;                 /* 1: an Option result, status 0 = none (Q-S3-23) */
+  int bounded;                /* 1: BOUNDS.json gives heap_words */
+  uint64_t heap_words;        /* the check --json memory words (Q-S8-11) */
 } Entry;
 
 typedef struct {
   Entry entry[MAX_ENTRIES];
   size_t count;
+  int bounded; /* 1: wasmtool got a BOUNDS.json */
 } Abi;
 
 static int fail2(const char *what, const char *detail) {
@@ -127,11 +137,11 @@ static uint8_t *memory_at(wasmtime_context_t *ctx, wasmtime_instance_t *inst, ui
                                                                             : NULL;
 }
 
-/* The status word of an Option entry (the i32 at STATUS_AT, low byte first); 2
-   when it is not in the memory. */
+/* The status word of an entry (the i32 at STATUS_AT, low byte first);
+   NO_STATUS when it is not in the memory. */
 static uint32_t read_status(wasmtime_context_t *ctx, wasmtime_instance_t *inst) {
   const uint8_t *b = memory_at(ctx, inst, STATUS_AT, 4u);
-  return b == NULL ? 2u : (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
+  return b == NULL ? NO_STATUS : (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
 }
 
 /* The U256 at address ADDR, low limb first. */
@@ -149,13 +159,52 @@ static int read_result(wasmtime_context_t *ctx, wasmtime_instance_t *inst, uint6
   return 1;
 }
 
+/* The heap pointer after a call: the global exported as `$heap` (Q-S8-11). */
+static int read_heap(wasmtime_context_t *ctx, wasmtime_instance_t *inst, uint64_t *out) {
+  wasmtime_extern_t item;
+  wasmtime_val_t v;
+  if (!wasmtime_instance_export_get(ctx, inst, "$heap", 5u, &item) || item.kind != WASMTIME_EXTERN_GLOBAL) return 0;
+  wasmtime_global_get(ctx, &item.of.global, &v);
+  *out = (uint64_t)v.of.i64;
+  return v.kind == WASMTIME_I64;
+}
+
+/* The `memory` words of each `{"entry":"NAME",...}` row of a check --json file
+   go to the ABI entry NAME (Q-S8-11). Returns 0 on IO or a row without them. */
+static int read_bounds(Abi *abi, const char *path) {
+  static char text[1u << 20];
+  FILE *f = fopen(path, "rb");
+  const char *p;
+  size_t len;
+  size_t k;
+  if (f == NULL) return 0;
+  len = fread(text, 1, sizeof text - 1u, f);
+  fclose(f);
+  text[len] = '\0';
+  for (p = strstr(text, "{\"entry\":\""); p != NULL; p = strstr(p, "{\"entry\":\"")) {
+    const char *name = p + 10;
+    const char *end = strchr(name, '"');
+    const char *mem = end != NULL ? strstr(end, "\"memory\":") : NULL;
+    if (mem == NULL) return 0;
+    for (k = 0; k < abi->count; k++) {
+      Entry *e = &abi->entry[k];
+      if (strlen(e->name) == (size_t)(end - name) && strncmp(e->name, name, (size_t)(end - name)) == 0) {
+        e->heap_words = strtoull(mem + 9, NULL, 10);
+        e->bounded = 1;
+      }
+    }
+    p = mem;
+  }
+  return 1;
+}
+
 /* Runs one call line and prints its result line. */
 static void run_call(wasm_engine_t *engine, wasmtime_module_t *module, const Abi *abi, char *line) {
   char *word[MAX_PARAMS + 2];
   size_t words = 0;
   char *tok;
   const Entry *e;
-  wasmtime_val_t args[4 * MAX_PARAMS + 1];
+  wasmtime_val_t args[4 * MAX_PARAMS];
   size_t nargs = 0;
   size_t k;
   for (tok = strtok(line, " \n"); tok != NULL && words < MAX_PARAMS + 2; tok = strtok(NULL, " \n")) word[words++] = tok;
@@ -179,11 +228,6 @@ static void run_call(wasm_engine_t *engine, wasmtime_module_t *module, const Abi
       nargs++;
     }
   }
-  if (e->status) {
-    args[nargs].kind = WASMTIME_I32;
-    args[nargs].of.i32 = STATUS_AT;
-    nargs++;
-  }
   {
     wasmtime_store_t *store = wasmtime_store_new(engine, NULL, NULL);
     wasmtime_context_t *ctx = wasmtime_store_context(store);
@@ -194,17 +238,29 @@ static void run_call(wasm_engine_t *engine, wasmtime_module_t *module, const Abi
     wasmtime_error_t *error = wasmtime_instance_new(ctx, module, NULL, 0, &inst, &trap);
     int have = error == NULL && trap == NULL && wasmtime_instance_export_get(ctx, &inst, e->name, strlen(e->name), &fn) &&
                fn.kind == WASMTIME_EXTERN_FUNC;
-    uint8_t *st = have && e->status ? memory_at(ctx, &inst, STATUS_AT, 4u) : NULL;
-    if (st != NULL) memcpy(st, "\2\0\0\0", 4u); /* status 2: the entry writes no status */
+    uint8_t *st = have ? memory_at(ctx, &inst, STATUS_AT, 4u) : NULL;
+    uint32_t status = NO_STATUS;
+    if (st != NULL) memcpy(st, "\377\0\0\0", 4u); /* NO_STATUS until the entry writes its status */
     if (have) error = wasmtime_func_call(ctx, &fn.of.func, args, nargs, &result, 1, &trap);
+    if (have && error == NULL && trap == NULL) status = read_status(ctx, &inst);
+    uint64_t heap = 0;
+    int heap_ok = !abi->bounded || !have || error != NULL || trap != NULL ||
+                  (e->bounded && read_heap(ctx, &inst, &heap) && heap >= HEAP_START &&
+                   (heap - HEAP_START + 7u) / 8u <= e->heap_words);
     if (trap != NULL) {
       printf("trap\n");
       wasm_trap_delete(trap);
     } else if (!have || error != NULL) {
       printf("bad: the entry does not run\n");
-    } else if (e->status && read_status(ctx, &inst) > 1u) {
+    } else if (!heap_ok) {
+      printf("bad: heap %llu is not in the bound\n", (unsigned long long)heap);
+    } else if (status == 2u) {
+      printf("LIMIT\n");
+    } else if (status == 3u) {
+      printf("ARG\n");
+    } else if (status > 1u || (status == 0u && !e->status)) {
       printf("bad: the entry writes no status\n");
-    } else if (e->status && read_status(ctx, &inst) == 0) {
+    } else if (status == 0u) {
       printf("none\n");
     } else {
       U256 x;
@@ -229,8 +285,10 @@ int main(int argc, char **argv) {
   wasm_engine_t *engine;
   wasmtime_module_t *module = NULL;
   wasmtime_error_t *error;
-  if (argc != 3) return fail2("usage", "wasmtool MODULE.wasm ABI.txt (calls on stdin)");
+  if (argc != 3 && argc != 4) return fail2("usage", "wasmtool MODULE.wasm ABI.txt [BOUNDS.json] (calls on stdin)");
   if (!read_abi(&abi, argv[2])) return fail2(argv[2], "not a langc abi --text file");
+  abi.bounded = argc == 4;
+  if (abi.bounded && !read_bounds(&abi, argv[3])) return fail2(argv[3], "not a langc check --json file");
   f = fopen(argv[1], "rb");
   if (f == NULL) return fail2(argv[1], "cannot open");
   len = fread(bytes, 1, sizeof bytes, f);

@@ -15,8 +15,12 @@ contents erase, while their trap flags remain.
 `test/gate.sh` runs the rows of each lowered example (`js differential`)
 on the ES module in `build/jstool` (`test/jstool.c`, Node). Each row must
 print the same output as its Wasm row. It also runs the `test/ir` rows of
-`comb`, `lazy`, `spine`, `proof-trap` and `memname` (`test/ir js`) against
-`langc --kit eval`. The Makefile runs the rows of `test/wasm/hash.txt`,
+`comb`, `lazy`, `spine`, `proof-trap`, `memname`, `issue-verify`,
+`attest-verify`, `withdraw-verify`, `transfer-verify` and `bag1024`
+(`test/ir js`) against `langc --kit eval`. The count rows (`js count`,
+`test/ir js count`) run the same rows on a `--js-count` module: each
+count is at most the `check --json` ops bound of its entry.
+The Makefile runs the rows of `test/wasm/hash.txt`,
 `test/wasm/secp.txt` and `test/wasm/traps.txt` on the ES module
 (`js regressions`).
 

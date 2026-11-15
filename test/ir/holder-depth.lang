@@ -1,0 +1,19 @@
+-- S8 C4 (Q-S8-36): the refusal row of the holderAt walk on the 1024 bag of
+-- test/ir/bag1024.lang. The lowering of atk nests deeper than 2000 levels, so
+-- `check --json` and the 3 builds refuse EVAL_DEPTH. At 128 to 512 holdings
+-- the lowering runs out of memory (exit 2), so the row uses 1024 holdings.
+def gpt : Prod U256 U256 :=
+  pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u
+
+def dbl : FreeMon Holding -> FreeMon Holding := fun (b : FreeMon Holding) => fmMul Holding b b
+
+def hk : Nat -> Holding :=
+  fun (k : Nat) => makeHolding (makeIdentity (pair (toU256 k) 0u) gpt nil nil) ctZero ctZero
+
+def bagk : Nat -> FreeMon Holding :=
+  fun (k : Nat) => dbl (dbl (dbl (dbl (dbl (dbl (dbl (dbl (dbl (dbl (fmEta Holding (hk k)))))))))))
+
+def natOf : Option Nat -> Nat := fun (o : Option Nat) => option 0 (fun (n : Nat) => n) o
+
+def atk : Nat -> Nat :=
+  fun (k : Nat) => natOf (len Holding (holderAt (pair (bagk k) (pair (unitsOf 100) 0u)) (pair (toU256 k) 0u)))

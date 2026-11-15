@@ -1,0 +1,47 @@
+good: ok
+good_call: ok
+unreachable: unreachable
+memory_grow: memory.grow
+call_indirect: call_indirect
+float: a float op
+prefix: a 0xFC or 0xFD prefix op
+signed_div: a signed div or rem
+div_no_idiom: a div or rem whose divisor is not X | (X == 0), Y + (Y == 0) or select(C, X, X == 0)
+div_two_locals: a div or rem whose divisor is not X | (X == 0), Y + (Y == 0) or select(C, X, X == 0)
+rem32_no_idiom: a div or rem whose divisor is not X | (X == 0), Y + (Y == 0) or select(C, X, X == 0)
+div_guard: ok
+div_guard_const: ok
+div_guard_eqz: ok
+div_guard_stale: a div or rem whose divisor is not X | (X == 0), Y + (Y == 0) or select(C, X, X == 0)
+div_guard_other: a div or rem whose divisor is not X | (X == 0), Y + (Y == 0) or select(C, X, X == 0)
+div_guard_loop: a div or rem whose divisor is not X | (X == 0), Y + (Y == 0) or select(C, X, X == 0)
+div_select: ok
+div_select_zero: a div or rem whose divisor is not X | (X == 0), Y + (Y == 0) or select(C, X, X == 0)
+memory_max: a memory whose max is not its min (N3)
+data_past_memory: a data segment past the memory
+self_call: a call-graph cycle (N2)
+call_cycle: a call-graph cycle (N2)
+es_good: ok
+es_throw: a throw
+es_div: a / whose divisor can be 0
+es_rem: a % whose divisor can be 0
+es_div_assign: a / whose divisor can be 0
+es_zero: a / whose divisor can be 0
+es_name_prefix: a % whose divisor can be 0
+es_nz_sum: a / whose divisor can be 0
+es_power: a / whose divisor can be 0
+es_template: a template literal
+es_open_string: an open string or comment
+es_open_comment: an open string or comment
+es_prelude: ok
+es_prelude_scope: a / whose divisor can be 0
+es_prelude_member: a / whose divisor can be 0
+es_powmod_modulus: a powMod call whose modulus is not P or N
+wgsl_good: ok
+wgsl_open_comment: an open string or comment
+wgsl_halts: ok
+wgsl_div: a div or rem whose divisor is not a nonzero literal
+wgsl_rem: a div or rem whose divisor is not a nonzero literal
+wgsl_zero: a div or rem whose divisor is not a nonzero literal
+wgsl_rem_assign: a div or rem whose divisor is not a nonzero literal
+wgsl_div_member: a div or rem whose divisor is not a nonzero literal

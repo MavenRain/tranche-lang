@@ -30,6 +30,7 @@ WASMTIME ?= /opt/homebrew
 WASM_TOOL = test/wasmtool.c src/front/u256.c
 JS_TOOL = test/jstool.c src/front/u256.c
 WGSL_TOOL = test/wgsltool.c src/front/u256.c
+NOTRAP_TOOL = test/notraptool.c
 WASMTIME_FILES = $(WASMTIME)/include/wasmtime.h $(WASMTIME)/lib/libwasmtime.dylib
 PATH_TOOL = test/pathtool.c $(filter-out src/front/front.c,$(FRONT))
 RUN_TOOL = test/runtool.c $(FRONT)
@@ -38,7 +39,7 @@ HEADERS = $(wildcard src/*.h src/front/*.h)
 
 .PHONY: build check check-clang clean gpu-check
 
-build: build/langc build/fronttool build/blsagtool build/ringsigtool build/claimtool build/elgamaltool build/thresholdtool build/dkgtool build/sigmatool build/frosttool build/ballottool build/transfertool build/withdrawtool build/jointrtool build/secptool build/shatool build/pathtool build/runtool build/wasmtool build/jstool build/wgsltool build/mcptool
+build: build/langc build/fronttool build/blsagtool build/ringsigtool build/claimtool build/elgamaltool build/thresholdtool build/dkgtool build/sigmatool build/frosttool build/ballottool build/transfertool build/withdrawtool build/jointrtool build/secptool build/shatool build/pathtool build/runtool build/wasmtool build/jstool build/wgsltool build/mcptool build/notraptool
 
 build/domain.c: domain/domain.lang gen/embed.c
 	mkdir -p build
@@ -130,13 +131,17 @@ build/wgsltool: $(WGSL_TOOL) $(HEADERS)
 	mkdir -p build
 	$(TCC) $(CFLAGS) -o build/wgsltool $(WGSL_TOOL)
 
+build/notraptool: $(NOTRAP_TOOL)
+	mkdir -p build
+	$(TCC) $(CFLAGS) -o build/notraptool $(NOTRAP_TOOL)
+
 build/jstest: test/jstest.c
 	mkdir -p build
 	$(TCC) $(CFLAGS) -o build/jstest test/jstest.c
 
-build/entrytest: test/entrytest.c
+build/entrytest: test/entrytest.c src/wasm.c src/js.c src/wgsl.c src/sha256.c
 	mkdir -p build
-	$(TCC) $(CFLAGS) -o build/entrytest test/entrytest.c
+	$(TCC) $(CFLAGS) -o build/entrytest test/entrytest.c src/wasm.c src/js.c src/wgsl.c src/sha256.c
 
 build/mcptool: $(MCP_TOOL)
 	mkdir -p build
@@ -168,7 +173,7 @@ check-clang: build/domain.c build/elg_table.c
 	$(CC) $(CLANG_FLAGS) test/entrytest.c
 	$(CC) $(CLANG_FLAGS) $(MCP_TOOL)
 
-check: build/langc build/fronttool build/blsagtool build/ringsigtool build/claimtool build/elgamaltool build/thresholdtool build/dkgtool build/sigmatool build/frosttool build/ballottool build/transfertool build/withdrawtool build/jointrtool build/secptool build/shatool build/pathtool build/runtool build/wasmtool build/jstool build/wgsltool build/mcptool build/jstest build/entrytest check-clang
+check: build/langc build/fronttool build/blsagtool build/ringsigtool build/claimtool build/elgamaltool build/thresholdtool build/dkgtool build/sigmatool build/frosttool build/ballottool build/transfertool build/withdrawtool build/jointrtool build/secptool build/shatool build/pathtool build/runtool build/wasmtool build/jstool build/wgsltool build/mcptool build/notraptool build/jstest build/entrytest check-clang
 	sh test/gate.sh
 	sh test/run.sh
 	sh test/review.sh

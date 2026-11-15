@@ -8,6 +8,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "ir.h"
+#include "js.h"
+#include "target.h"
+#include "wgsl.h"
+
 typedef struct {
   char call[512];
   char want[96];
@@ -111,6 +116,14 @@ static int build_abi(void) {
   return system(command) == 0;
 }
 
+/* The check --json bounds of PROGRAM: wasmtool checks the heap of each call
+   against them (Q-S8-11). */
+static int build_bounds(void) {
+  char command[384];
+  snprintf(command, sizeof command, "build/langc --kit check --json %s >build/entry-grid.bounds", program);
+  return system(command) == 0;
+}
+
 static int build_program(const char *target, const char *out) {
   char command[384];
   snprintf(command, sizeof command, "build/langc --kit build %s %s %s", program, target, out);
@@ -122,7 +135,10 @@ static int check_targets(int gpu) {
   if (!build_program("-o", "build/entry-grid.wasm") ||
       !build_program("--js", "build/entry-grid.mjs") ||
       !build_abi() ||
-      !check_backend("wasm", "build/wasmtool build/entry-grid.wasm build/entry-grid.abi <build/entry-grid.calls") ||
+      !build_bounds() ||
+      !check_backend("wasm",
+                     "build/wasmtool build/entry-grid.wasm build/entry-grid.abi build/entry-grid.bounds "
+                     "<build/entry-grid.calls") ||
       !check_backend("js", "build/jstool build/entry-grid.mjs build/entry-grid.abi <build/entry-grid.calls") ||
       (gpu && (!build_program("--wgsl", "build/entry-grid.wgsl") ||
                !check_backend("wgsl", "build/wgsltool build/entry-grid.wgsl build/entry-grid.abi <build/entry-grid.calls")))) {
@@ -130,6 +146,72 @@ static int check_targets(int gpu) {
     return 0;
   }
   return 1;
+}
+
+/* Q-S8-10: no source form reaches the LIMIT status yet, so one hand-built IR
+   function (LIMIT, then RETURN 0) checks that each backend reports LIMIT. */
+static const IrExpr limit_zero = {.kind = IR_EXPR_CONST, .value = 0};
+static const IrStmt limit_fail = {.kind = IR_STMT_LIMIT};
+static const IrStmt limit_return = {.kind = IR_STMT_RETURN, .expr = &limit_zero};
+static const IrStmt *const limit_body[] = {&limit_fail, &limit_return};
+/* Its heap stays at WASM_HEAP_START, so its heap words are 0 (Q-S8-11). */
+static const IrFunc limit_func = {.name = "limit", .result = IR_SCALAR_NAT, .body = {limit_body, 2}, .heap_words = 0};
+static const IrProgram limit_prog = {&limit_func, 1};
+
+/* Q-S8-7: one hand-built IR function with a Flag parameter (RETURN 0) checks
+   that each backend reports ARG for the Flag argument 2. */
+static const IrScalar arg_params[] = {IR_SCALAR_FLAG};
+static const IrFunc arg_func = {.name = "arg",
+                                .params = arg_params,
+                                .param_count = 1,
+                                .result = IR_SCALAR_NAT,
+                                .local_count = 1,
+                                .body = {limit_body + 1, 1},
+                                .heap_words = 0};
+static const IrProgram arg_prog = {&arg_func, 1};
+
+/* build/entry-NAME.EXT of the one entry of PROG (NAME its name). */
+static int write_hand(const IrProgram *prog, const char *ext, int part) {
+  char path[64];
+  FILE *f;
+  int ok;
+  snprintf(path, sizeof path, "build/entry-%s.%s", prog->funcs->name, ext);
+  f = fopen(path, "wb");
+  if (f == NULL) return 0;
+  ok = part == 0   ? target_write(prog, TARGET_PART_MAIN, f, stderr)
+       : part == 1 ? js_write(prog, f, stderr)
+       : part == 2 ? wgsl_write(prog, f, stderr)
+                   : target_abi_line(prog->funcs, f, stderr);
+  return fclose(f) == 0 && ok;
+}
+
+/* COMMAND prints one line, WANT. */
+static int hand_status(const char *command, const char *want) {
+  FILE *stream = popen(command, "r");
+  char line[64];
+  int ok;
+  if (stream == NULL) return 0;
+  ok = fgets(line, sizeof line, stream) != NULL && strcmp(line, want) == 0 &&
+       fgets(line, sizeof line, stream) == NULL && !ferror(stream);
+  return pclose(stream) == 0 && ok;
+}
+
+/* The hand-built entry of PROG on each backend: the call CALL prints WANT. */
+static int check_hand(const IrProgram *prog, const char *call, const char *want, int gpu) {
+  const char *name = prog->funcs->name;
+  char command[192];
+  int ok = write_hand(prog, "wasm", 0) && write_hand(prog, "mjs", 1) && write_hand(prog, "wgsl", 2) &&
+           write_hand(prog, "abi", 3);
+  snprintf(command, sizeof command, "echo '%s' | build/wasmtool build/entry-%s.wasm build/entry-%s.abi", call, name,
+           name);
+  ok = ok && hand_status(command, want);
+  snprintf(command, sizeof command, "echo '%s' | build/jstool build/entry-%s.mjs build/entry-%s.abi", call, name, name);
+  ok = ok && hand_status(command, want);
+  snprintf(command, sizeof command, "echo '%s' | build/wgsltool build/entry-%s.wgsl build/entry-%s.abi", call, name,
+           name);
+  ok = ok && (!gpu || hand_status(command, want));
+  if (!ok) fprintf(stderr, "FAIL %s row: a backend did not report %s", name, want);
+  return ok;
 }
 
 /* These fixtures also used grid.awk before the port. Recover their exact
@@ -255,6 +337,28 @@ static int word_rows(void) {
   return write_calls();
 }
 
+/* A closed empty table gives none even when the statement needs a runtime
+   argument. The table failure must not escape lowering without a diagnostic. */
+static int check_empty_table(void) {
+  static const char source[] =
+    "def p : U256 -> CPoint := fun (x : U256) => pair x 0u\n"
+    "def ct : Ct := ctOf (pair 0u 0u) (pair 0u 0u)\n"
+    "def st : U256 -> Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod Ct (Prod Ct (Prod Ct Ct))))))) :=\n"
+    "  fun (x : U256) => pair (p x) (pair (p x) (pair (p x) (pair (p x) (pair (p x) (pair ct (pair ct (pair ct ct)))))))\n"
+    "def badTable : U256 -> Option Flag :=\n"
+    "  fun (x : U256) => transferVerify (rowsOf nil) (st x) (pair nil (pair nil (pair nil nil)))\n";
+  FILE *f = fopen("build/entry-table.lang", "wb");
+  int ok;
+  if (f == NULL) return 0;
+  ok = fputs(source, f) >= 0;
+  ok = fclose(f) == 0 && ok;
+  program = "build/entry-table.lang";
+  count = 1;
+  strcpy(rows[0].call, "badTable 0u");
+  strcpy(rows[0].want, "none\n");
+  return ok && write_calls() && check_eval() && check_targets(0);
+}
+
 int main(int argc, char **argv) {
   static const char *const fixtures[] = {
     "examples/algebra.lang", "examples/equality.lang", "examples/formers.lang",
@@ -284,5 +388,11 @@ int main(int argc, char **argv) {
     return 1;
   }
   printf("word boundary grid: %zu rows, evaluator/wasm/js%s passed\n", count, gpu ? "/wgsl" : "");
+  if (!check_hand(&limit_prog, "limit", "LIMIT\n", gpu)) return 1;
+  printf("limit row: wasm/js%s report LIMIT\n", gpu ? "/wgsl" : "");
+  if (!check_hand(&arg_prog, "arg 2", "ARG\n", gpu)) return 1;
+  printf("arg row: wasm/js%s report ARG\n", gpu ? "/wgsl" : "");
+  if (!check_empty_table()) return 1;
+  puts("empty table row: evaluator/wasm/js report none");
   return 0;
 }

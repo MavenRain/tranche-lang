@@ -8,8 +8,10 @@
 
 /* Lowers each entry of the checked program M (a PROGRAM definition where
    entry_of holds) into PROG. Writes notes to ERR, or no notes when ERR is
-   NULL (check --json, Q-S3-34). Returns 1, or 0 after a diagnostic. */
-int lower_program(Machine *m, IrProgram *prog, FILE *err);
+   NULL (check --json, Q-S3-34). WGSL is 1 for the WGSL back end: an
+   operation with no WGSL form refuses (Q-S8-27). Returns 1, or 0 after a
+   diagnostic. */
+int lower_program(Machine *m, IrProgram *prog, FILE *err, int wgsl);
 /* Writes PROG as text: a `func` line for each entry, then one statement on
    each line. */
 void ir_print(const IrProgram *prog, FILE *out);
@@ -17,7 +19,7 @@ void ir_print(const IrProgram *prog, FILE *out);
 typedef struct {
   uint64_t ops;    /* the IR statements and expression nodes that run */
   uint64_t stack;  /* words: the locals, the status word, the deepest expression */
-  uint64_t memory; /* words: the ALLOC blocks and the prelude result blocks */
+  uint64_t memory; /* words: the ALLOC blocks, the prelude call heap, the U256 parameter blocks (Q-S8-11) */
 } IrBound;
 /* Puts the bound of FN in OUT: a loop multiplies its body by its count, IF
    and SWITCH take the larger arm, and each sum or product stops at

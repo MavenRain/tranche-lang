@@ -11,6 +11,52 @@ gpu=${1:-}
 kit() {
   if [ -f "$1" ] && rg -q -x -F "$2" "$1"; then echo --kit; fi
 }
+# The count rows (S8 C4, Q-S8-32): `count_rows SRC DIR STEM [--kit]` builds SRC
+# with --js-count to DIR/cnt/STEM.mjs (not a module of the no-trap scan) and
+# runs the rows of DIR/STEM.in in build/jstool. Each count must be at most the
+# `check --json` ops bound of its entry. When the shipped module ran (DIR/STEM.js
+# is there), each result must be its row; when it did not run (Q-S8-33 (b)), the
+# caller compares the results (DIR/STEM.cres) with the eval rows. It prints
+# `ROWS BAD MAX` (MAX: the largest count), or `build` when a stage fails. The
+# bad rows are in DIR/STEM.cbad.
+count_rows() {
+  cr_src=$1
+  cr_dir=$2
+  cr_stem=$3
+  shift 3
+  mkdir -p "$cr_dir/cnt"
+  : >"$cr_dir/$cr_stem.cbad"
+  : >"$cr_dir/$cr_stem.cres"
+  if ! build/langc "$@" build "$cr_src" --js-count "$cr_dir/cnt/$cr_stem.mjs" 2>"$tmp/c.err" ||
+    ! build/langc "$@" check --json "$cr_src" >"$cr_dir/$cr_stem.json" 2>>"$tmp/c.err" ||
+    ! build/jstool "$cr_dir/cnt/$cr_stem.mjs" "$cr_dir/$cr_stem.abi" <"$cr_dir/$cr_stem.in" >"$cr_dir/$cr_stem.cnt" 2>>"$tmp/c.err"; then
+    echo build
+    return 0
+  fi
+  rg -o -r '$1 $2' '"entry":"([^"]*)","ops":([0-9]+)' "$cr_dir/$cr_stem.json" >"$cr_dir/$cr_stem.bound" || :
+  set -- $(awk -v res="$cr_dir/$cr_stem.cres" -v bad="$cr_dir/$cr_stem.cbad" '
+    FILENAME == ARGV[1] { b[$1] = $2; next }
+    FILENAME == ARGV[2] { n += 1; name[n] = $1; next }
+    /^ops [0-9]+$/ { ops[i] = $2 + 0; next }
+    { i += 1; print > res }
+    END {
+      nb = 0
+      mx = 0
+      if (i != n) { print "rows " n ", results " i > bad; nb += 1 }
+      for (k = 1; k <= n; k += 1) {
+        if (!(k in ops)) { print "no count: row " k " " name[k] > bad; nb += 1 }
+        else if (!(name[k] in b)) { print "no bound: row " k " " name[k] > bad; nb += 1 }
+        else if (ops[k] > b[name[k]] + 0) { print "over: row " k " " name[k] " ops " ops[k] " bound " b[name[k]] > bad; nb += 1 }
+        if ((k in ops) && ops[k] > mx) mx = ops[k]
+      }
+      printf "%d %d %d\n", n, nb, mx
+    }' "$cr_dir/$cr_stem.bound" "$cr_dir/$cr_stem.in" "$cr_dir/$cr_stem.cnt")
+  if [ -f "$cr_dir/$cr_stem.js" ]; then
+    cmp -s "$cr_dir/$cr_stem.cres" "$cr_dir/$cr_stem.js" ||
+      { echo "the results differ from the shipped module" >>"$cr_dir/$cr_stem.cbad"; set -- "$1" $(($2 + 1)) "$3"; }
+  fi
+  echo "$1 $2 $3"
+}
 for prog in examples/*.lang; do
   out=$(build/langc $(kit examples/kit.txt "${prog#examples/}") check "$prog" 2>&1) || true
   count=$((count + 1))
@@ -191,11 +237,42 @@ build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-sign.lang
 build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-claim.lang
 build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-attest.lang
 build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-holder.lang
-build_refused --kit REFUSE_LOWER test/ir/attest-verify.lang
 build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-jrsend.lang
-build_refused --kit REFUSE_LOWER test/ir/transfer-verify.lang
 build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-withdraw.lang
-build_refused --kit REFUSE_LOWER test/ir/withdraw-verify.lang
+# Q-S8-27: withdrawVerify lowers to Wasm and ES, and the WGSL build refuses
+# REFUSE_LOWER. build_refused checks the code only, so check the message too.
+build_refused --kit REFUSE_LOWER test/ir/withdraw-verify.lang --wgsl
+case "$(head -n 1 "$tmp/err")" in
+  "langc: REFUSE_LOWER: ok: withdrawVerify does not lower to WGSL (HOST-LIMIT)") ;;
+  *) echo "FAIL build test/ir/withdraw-verify.lang: want the WGSL message, got: $(head -n 1 "$tmp/err")"; fail=$((fail + 1)) ;;
+esac
+# Q-S8-36: the holderAt walk on the 1024 bag (test/ir/holder-depth.lang)
+# nests deeper than 2000 levels in the lowering, so the build refuses
+# EVAL_DEPTH (not a REFUSE_ code). build_refused reads the first line of
+# stderr, but the 2 O24 notes of hk and bagk come first. This row wants
+# exit 1, no stdout, no module and the message as the last line of stderr.
+status=0
+rm -f "$tmp/refused.out"
+build/langc --kit build test/ir/holder-depth.lang -o "$tmp/refused.out" >"$tmp/out" 2>"$tmp/err" || status=$?
+builds=$((builds + 1))
+case "$status:$(wc -c <"$tmp/out" | tr -d ' '):$([ -e "$tmp/refused.out" ] && echo module || echo none):$(tail -n 1 "$tmp/err")" in
+  "1:0:none:langc: EVAL_DEPTH: atk: the lowering nests deeper than 2000 levels") ;;
+  *) echo "FAIL build test/ir/holder-depth.lang: want exit 1, no module and the EVAL_DEPTH message, got exit $status: $(tail -n 1 "$tmp/err")"; fail=$((fail + 1)) ;;
+esac
+# P5 (B8): transferVerify lowers to Wasm and ES, and the WGSL build refuses
+# REFUSE_LOWER. build_refused checks the code only, so check the message too.
+build_refused --kit REFUSE_LOWER test/ir/transfer-verify.lang --wgsl
+case "$(head -n 1 "$tmp/err")" in
+  "langc: REFUSE_LOWER: ok: transferVerify does not lower to WGSL (HOST-LIMIT)") ;;
+  *) echo "FAIL build test/ir/transfer-verify.lang: want the WGSL message, got: $(head -n 1 "$tmp/err")"; fail=$((fail + 1)) ;;
+esac
+# Q-S8-3 N4: a heap over the bound of the static memory refuses
+# REFUSE_LOWER. build_refused checks the code only, so check the message too.
+build_refused --kit REFUSE_LOWER test/ir/heap.lang
+case "$(head -n 1 "$tmp/err")" in
+  "langc: REFUSE_LOWER: big: a heap of 3000000006 words does not lower (N4)") ;;
+  *) echo "FAIL build test/ir/heap.lang: want the N4 heap message, got: $(head -n 1 "$tmp/err")"; fail=$((fail + 1)) ;;
+esac
 # S10: the WGSL module refuses the secret ops too.
 build_refused --kit REFUSE_TARGET_SECRET test/ir/secret-key.lang --wgsl
 build_refused "" REFUSE_KIT test/ir/comb.lang
@@ -348,15 +425,17 @@ for in_file in "$tmp"/wd/*.in; do
   [ "$bad" -eq 0 ] || { echo "FAIL wasm differential $file: $bad mismatches, first $(head -n 1 "$tmp/bad.txt")"; fail=$((fail + 1)); }
 done
 echo "wasm differential: $rows rows, $mismatches mismatches"
-# A Flag argument larger than 1 traps (langc eval refuses it with EVAL_ARGS).
+# A Flag argument larger than 1 gives ARG (Q-S8-7; langc eval refuses it with EVAL_ARGS).
 got=$(echo 'pick 2 4 9' | build/wasmtool "$tmp/wd/entries.wasm" "$tmp/wd/entries.abi" 2>&1) || true
-[ "$got" = "trap" ] || { echo "FAIL wasm pick 2 4 9: want trap, got $got"; fail=$((fail + 1)); }
+[ "$got" = "ARG" ] || { echo "FAIL wasm pick 2 4 9: want ARG, got $got"; fail=$((fail + 1)); }
 
 # The JS differential (S9 B4, Q-S9-6 (a)): the same rows run on the ES module
 # of `langc build FILE --js` in build/jstool (under node) and must print the
 # same OUTPUT.
 js_rows=0
 js_bad=0
+js_count_rows=0
+js_count_bad=0
 for in_file in "$tmp"/wd/*.in; do
   file=$(basename "$in_file" .in)
   k=$(kit examples/kit.txt "$file.lang")
@@ -371,10 +450,23 @@ for in_file in "$tmp"/wd/*.in; do
   bad=$(rg -c '.' "$tmp/bad.txt" || echo 0)
   js_bad=$((js_bad + bad))
   [ "$bad" -eq 0 ] || { echo "FAIL js differential $file: $bad mismatches, first $(head -n 1 "$tmp/bad.txt")"; fail=$((fail + 1)); }
+  got=$(count_rows "examples/$file.lang" "$tmp/wd" "$file" $k)
+  if [ "$got" = build ]; then
+    echo "FAIL js count $file: $(head -n 1 "$tmp/c.err")"
+    fail=$((fail + 1))
+    continue
+  fi
+  cr_rows=${got%% *}
+  got=${got#* }
+  cr_bad=${got%% *}
+  js_count_rows=$((js_count_rows + cr_rows))
+  js_count_bad=$((js_count_bad + cr_bad))
+  [ "$cr_bad" -eq 0 ] || { echo "FAIL js count $file: $cr_bad bad, first $(head -n 1 "$tmp/wd/$file.cbad")"; fail=$((fail + 1)); }
 done
 echo "js differential: $js_rows rows, $js_bad mismatches"
+echo "js count: $js_count_rows rows, $js_count_bad bad"
 got=$(echo 'pick 2 4 9' | build/jstool "$tmp/wd/entries.mjs" "$tmp/wd/entries.abi" 2>&1) || true
-[ "$got" = "trap" ] || { echo "FAIL js pick 2 4 9: want trap, got $got"; fail=$((fail + 1)); }
+[ "$got" = "ARG" ] || { echo "FAIL js pick 2 4 9: want ARG, got $got"; fail=$((fail + 1)); }
 
 # The test/ir modules (A7 piece (c)): each builds in --kit mode to a valid
 # module. Each row `FILE NAME ARGS` below runs on the module of test/ir/FILE.lang
@@ -382,7 +474,7 @@ got=$(echo 'pick 2 4 9' | build/jstool "$tmp/wd/entries.mjs" "$tmp/wd/entries.ab
 # `trap`).
 mkdir -p "$tmp/ir"
 ir_mods=0
-for m in comb lazy spine proof-trap memname; do
+for m in comb lazy spine proof-trap memname issue-verify attest-verify withdraw-verify transfer-verify bag1024; do
   if ! build/langc --kit build "test/ir/$m.lang" -o "$tmp/ir/$m.wasm" 2>"$tmp/w.err" ||
     ! wasm-validate "$tmp/ir/$m.wasm" 2>>"$tmp/w.err" ||
     ! build/langc --kit abi "test/ir/$m.lang" --text >"$tmp/ir/$m.abi" 2>>"$tmp/w.err"; then
@@ -436,10 +528,97 @@ proof-trap proofSymm 18446744073709551615
 proof-trap proofTrans 18446744073709551615
 proof-trap proofCong 18446744073709551615
 memname memory
+issue-verify vz 10759210715454867231877336886846517845312708813818011800782320276251449802981u
+issue-verify vz 10759210715454867231877336886846517845312708813818011800782320276251449802982u
+issue-verify vz 0u
+issue-verify vz 115792089237316195423570985008687907852837564279074904382605163141518161494337u
+issue-verify vz 115792089237316195423570985008687907853269984665640564039457584007913129639935u
+issue-verify va 35062279437171282596050629070735700072639923391014583143766716849643692989431u
+issue-verify va 35062279437171282596050629070735700072639923391014583143766716849643692989432u
+issue-verify va 0u
+issue-verify va 115792089237316195423570985008687907853269984665640564039457584007908834671663u
+issue-verify va 115792089237316195423570985008687907853269984665640564039457584007913129639935u
+issue-verify vm8 10759210715454867231877336886846517845312708813818011800782320276251449802981u
+issue-verify vm0 105832500000366686126513841120619024399407881392553655522432285288073368893586u
+issue-verify vm0 105832500000366686126513841120619024399407881392553655522432285288073368893587u
+issue-verify vn9 35062279437171282596050629070735700072639923391014583143766716849643692989431u
+issue-verify vn11 0u
+issue-verify vn11 10759210715454867231877336886846517845312708813818011800782320276251449802981u
+issue-verify vko 0u
+issue-verify vko 100862081773581120499222301212791081193994281440454033593790618293887747050036u
+issue-verify vkh 0u
+issue-verify vkh 1u
+issue-verify vkh 115792089237316195423570985008687907853269984665640564039457584007908834671663u
+issue-verify vc 54253141229701892740678441538472478126466317116121420289154985997987923385716u
+issue-verify vc 54253141229701892740678441538472478126466317116121420289154985997987923385717u
+issue-verify vc 115792089237316195423570985008687907853269984665640564039457584007908834671663u
+issue-verify vc 115792089237316195423570985008687907853269984665640564039457584007913129639935u
+attest-verify v2s 71265592852439088978420232507440119336969720815783799636518122779530942521005u
+attest-verify v2s 71265592852439088978420232507440119336969720815783799636518122779530942521006u
+attest-verify v2s 0u
+attest-verify v2s 115792089237316195423570985008687907852837564279074904382605163141518161494337u
+attest-verify v2s 115792089237316195423570985008687907853269984665640564039457584007913129639935u
+attest-verify v2c 14121108961765325475935132116446271014595882133811077218824500418693476021389u
+attest-verify v2c 14121108961765325475935132116446271014595882133811077218824500418693476021390u
+attest-verify v2c 115792089237316195423570985008687907853269984665640564039457584007913129639935u
+attest-verify v2k 48009403158434809478298710137233764200988036438868259456275038304221065242292u
+attest-verify v2k 48009403158434809478298710137233764200988036438868259456275038304221065242293u
+attest-verify v2k 0u
+attest-verify v2k 115792089237316195423570985008687907853269984665640564039457584007908834671663u
+attest-verify v2k 115792089237316195423570985008687907853269984665640564039457584007913129639935u
+attest-verify v2m 44696466249196887777481833878429299174322536392992392205634510941844339159869u
+attest-verify v2m 44696466249196887777481833878429299174322536392992392205634510941844339159870u
+attest-verify v2m 115792089237316195423570985008687907853269984665640564039457584007908834671663u
+attest-verify v200 0u
+attest-verify v200 1u
+attest-verify v200 115792089237316195423570985008687907853269984665640564039457584007908834671663u
+attest-verify v2r 55066263022277343669578718895168534326250603453777594175500187360389116729240u
+attest-verify v2r 55066263022277343669578718895168534326250603453777594175500187360389116729241u
+attest-verify v2r 115792089237316195423570985008687907853269984665640564039457584007908834671663u
+attest-verify v2r 115792089237316195423570985008687907853269984665640564039457584007913129639935u
+attest-verify v2z 0u
+attest-verify v2z 1u
+attest-verify v2zs 0u
+attest-verify v2zs 1u
+attest-verify v2n 49618969110780122258819871818221765269038836941366886600293911109636132149115u
+attest-verify v2n 0u
+attest-verify v2l 0u
+attest-verify v2l 71265592852439088978420232507440119336969720815783799636518122779530942521005u
+attest-verify v0 48009403158434809478298710137233764200988036438868259456275038304221065242292u
+attest-verify v0 0u
+attest-verify v1s 92209745376441754765850393498925718993366943089527067458675377871439987964140u
+attest-verify v1s 92209745376441754765850393498925718993366943089527067458675377871439987964141u
+attest-verify v1s 115792089237316195423570985008687907852837564279074904382605163141518161494337u
+attest-verify v28s 56536691190730841183752368768954143162805440158008278995265568109046926654533u
+attest-verify v28s 56536691190730841183752368768954143162805440158008278995265568109046926654534u
+attest-verify v28s 115792089237316195423570985008687907852837564279074904382605163141518161494337u
+attest-verify v28n 23965553744959645310344068650604351841176764670458888370228541308762941543155u
+attest-verify v28l 0u
+attest-verify v29 88789495143442116025801984763830218317601484092281216301053684219001740388315u
+attest-verify v29 0u
+attest-verify v29t 56536691190730841183752368768954143162805440158008278995265568109046926654533u
+attest-verify v29m 95674064106947776571119569332896229328764294068924322990794687490889628823026u
+attest-verify v28z 0u
+attest-verify v28z 1u
+withdraw-verify ok 3u
+withdraw-verify ok 340282366920938463463374607431768211456u
+withdraw-verify keyx 21505829891763648114329055987619236494102133314575206970830385799158076338149u
+withdraw-verify f2573 40352516724488128786602981578208480139583434020001559256644750261983754227746u
+withdraw-verify short 3u
+transfer-verify ok 83171967071150358985866038151071862739706381731040805772715781802460730425109u
+transfer-verify ok 83171967071150358985866038151071862739706381731040805772715781802460730425108u
+transfer-verify zw 35624745970848103714088961184274129198232750449778654297452219920517638024189u
+transfer-verify short 83171967071150358985866038151071862739706381731040805772715781802460730425109u
+transfer-verify closed 83171967071150358985866038151071862739706381731040805772715781802460730425109u
+bag1024 cons1025 3
+bag1024 lenk 3
+bag1024 fullk 3
+bag1024 okk 3
+bag1024 cons1025 0
 EOF
 ir_rows=0
 ir_bad=0
-for m in comb lazy spine proof-trap memname; do
+for m in comb lazy spine proof-trap memname issue-verify attest-verify withdraw-verify transfer-verify bag1024; do
   [ -f "$tmp/ir/$m.in" ] || continue
   if ! build/wasmtool "$tmp/ir/$m.wasm" "$tmp/ir/$m.abi" <"$tmp/ir/$m.in" >"$tmp/ir/$m.got" 2>"$tmp/w.err"; then
     echo "FAIL wasmtool test/ir/$m.lang: $(head -n 1 "$tmp/w.err")"
@@ -458,14 +637,42 @@ echo "test/ir wasm: $ir_mods modules valid, $ir_rows rows, $ir_bad mismatches"
 # `langc --kit eval` output.
 ir_js_rows=0
 ir_js_bad=0
-for m in comb lazy spine proof-trap memname; do
+ir_js_count_rows=0
+ir_js_count_bad=0
+for m in comb lazy spine proof-trap memname issue-verify attest-verify withdraw-verify transfer-verify bag1024; do
   [ -f "$tmp/ir/$m.in" ] || continue
-  if ! build/langc --kit build "test/ir/$m.lang" --js "$tmp/ir/$m.mjs" 2>"$tmp/w.err" ||
-    ! build/jstool "$tmp/ir/$m.mjs" "$tmp/ir/$m.abi" <"$tmp/ir/$m.in" >"$tmp/ir/$m.js" 2>>"$tmp/w.err"; then
+  if ! build/langc --kit build "test/ir/$m.lang" --js "$tmp/ir/$m.mjs" 2>"$tmp/w.err"; then
     echo "FAIL jstool test/ir/$m.lang: $(head -n 1 "$tmp/w.err")"
     fail=$((fail + 1))
     continue
   fi
+  # Q-S8-33 (b): the count module replaces the shipped run of the 2 large
+  # modules. Their shipped module still builds (the no-trap scan reads it), and
+  # the results of their count module compare with the eval rows below. The
+  # other modules run both.
+  case $m in
+  withdraw-verify | transfer-verify) rm -f "$tmp/ir/$m.js" ;;
+  *)
+    if ! build/jstool "$tmp/ir/$m.mjs" "$tmp/ir/$m.abi" <"$tmp/ir/$m.in" >"$tmp/ir/$m.js" 2>"$tmp/w.err"; then
+      echo "FAIL jstool test/ir/$m.lang: $(head -n 1 "$tmp/w.err")"
+      fail=$((fail + 1))
+      continue
+    fi
+    ;;
+  esac
+  got=$(count_rows "test/ir/$m.lang" "$tmp/ir" "$m" --kit)
+  if [ "$got" = build ]; then
+    echo "FAIL test/ir js count $m: $(head -n 1 "$tmp/c.err")"
+    fail=$((fail + 1))
+    continue
+  fi
+  cr_rows=${got%% *}
+  got=${got#* }
+  cr_bad=${got%% *}
+  ir_js_count_rows=$((ir_js_count_rows + cr_rows))
+  ir_js_count_bad=$((ir_js_count_bad + cr_bad))
+  [ "$cr_bad" -eq 0 ] || { echo "FAIL test/ir js count $m: $cr_bad bad, first $(head -n 1 "$tmp/ir/$m.cbad")"; fail=$((fail + 1)); }
+  [ -f "$tmp/ir/$m.js" ] || cp "$tmp/ir/$m.cres" "$tmp/ir/$m.js"
   ir_js_rows=$((ir_js_rows + $(rg -c '.' "$tmp/ir/$m.in" || echo 0)))
   paste -d '|' "$tmp/ir/$m.in" "$tmp/ir/$m.want" "$tmp/ir/$m.js" | awk -F '|' '$2 != $3' >"$tmp/bad.txt"
   bad=$(rg -c '.' "$tmp/bad.txt" || echo 0)
@@ -473,6 +680,76 @@ for m in comb lazy spine proof-trap memname; do
   [ "$bad" -eq 0 ] || { echo "FAIL test/ir js $m: $bad mismatches, first $(head -n 1 "$tmp/bad.txt")"; fail=$((fail + 1)); }
 done
 echo "test/ir js: $ir_js_rows rows, $ir_js_bad mismatches"
+echo "test/ir js count: $ir_js_count_rows rows, $ir_js_count_bad bad"
+
+# The bound rows (S8 C4, Q-S8-34): the `check --json` bounds of each test/ir
+# module must be byte-equal with test/ir/bounds.txt (one row
+# `MODULE "entry":...,"memory":N` for each entry, in the module order). The
+# json is the file that count_rows writes to $tmp/ir/MODULE.json.
+: >"$tmp/bounds.got"
+for m in comb lazy spine proof-trap memname issue-verify attest-verify withdraw-verify transfer-verify bag1024; do
+  [ -f "$tmp/ir/$m.json" ] || continue
+  rg -o '"entry":"[^"]*","ops":[0-9]+,"stack":[0-9]+,"memory":[0-9]+' "$tmp/ir/$m.json" |
+    awk -v m="$m" '{ print m " " $0 }' >>"$tmp/bounds.got"
+done
+pin_rows=$(rg -c '.' "$tmp/bounds.got" || echo 0)
+if cmp -s test/ir/bounds.txt "$tmp/bounds.got"; then
+  echo "test/ir bounds: $pin_rows rows, 0 changed"
+else
+  echo "FAIL test/ir bounds: test/ir/bounds.txt differs, first: $(diff test/ir/bounds.txt "$tmp/bounds.got" | rg -m 1 '^[<>]' | cut -c1-160)"
+  fail=$((fail + 1))
+fi
+
+# S8 C2 (PLAN N4, Q-S8-12): build/notraptool, the port of lien-lang
+# test/notraptool.c. --self-test must print test/notrap/expect.txt. Each
+# module of test/notrap/bad/expect.txt (NAME.wat through wat2wasm, NAME.mjs
+# with --js, NAME.wgsl with --wgsl) must exit 1 with a FAIL line that has
+# its message. Each module that this gate writes must have no trap form: the
+# ir loop ($tmp/NAME.wasm and $tmp/NAME.wgsl), the examples of the wasmtool
+# and jstool rows ($tmp/wd) and test/ir ($tmp/ir).
+build/notraptool --self-test >"$tmp/notrap.out" 2>&1 || :
+if cmp -s "$tmp/notrap.out" test/notrap/expect.txt; then
+  echo "notrap regressions: $(rg -c '.' test/notrap/expect.txt) checked"
+else
+  echo "FAIL notrap regressions: the self-test output is not test/notrap/expect.txt"
+  fail=$((fail + 1))
+fi
+mkdir -p "$tmp/nb"
+notrap_bad=0
+while read -r name msg; do
+  status=0
+  : >"$tmp/out"
+  case "$name" in
+    *.wat)
+      if wat2wasm "test/notrap/bad/$name" -o "$tmp/nb/bad.wasm" 2>"$tmp/out"; then
+        build/notraptool "$tmp/nb/bad.wasm" >"$tmp/out" 2>&1 || status=$?
+      else
+        status=9
+      fi ;;
+    *.mjs) build/notraptool --js "test/notrap/bad/$name" >"$tmp/out" 2>&1 || status=$? ;;
+    *.wgsl) build/notraptool --wgsl "test/notrap/bad/$name" >"$tmp/out" 2>&1 || status=$? ;;
+    *) status=9 ;;
+  esac
+  if [ "$status" -eq 1 ] && rg -q -F -- ": $msg" "$tmp/out"; then
+    notrap_bad=$((notrap_bad + 1))
+  else
+    echo "FAIL notrap bad $name: want exit 1 and '$msg', got exit $status: $(head -n 1 "$tmp/out")"
+    fail=$((fail + 1))
+  fi
+done <test/notrap/bad/expect.txt
+echo "notrap bad: $notrap_bad of $(rg -c '.' test/notrap/bad/expect.txt) refused"
+notrap_scan() { # $1 the mode name, then the tool arguments
+  notrap_mode=$1
+  shift
+  status=0
+  build/notraptool "$@" >"$tmp/notrap.scan" 2>&1 || status=$?
+  rg '^FAIL' "$tmp/notrap.scan" | head -n 5
+  [ "$status" -eq 0 ] || { echo "FAIL notrap $notrap_mode: exit $status"; fail=$((fail + 1)); }
+  tail -n 1 "$tmp/notrap.scan"
+}
+notrap_scan wasm "$tmp"/*.wasm "$tmp"/wd/*.wasm "$tmp"/ir/*.wasm
+notrap_scan js --js "$tmp"/wd/*.mjs "$tmp"/ir/*.mjs
+notrap_scan wgsl --wgsl "$tmp"/*.wgsl
 
 # S10: `sh test/gate.sh gpu` (make gpu-check, outside the sandbox: deno needs a
 # GPU adapter) runs the WGSL modules in build/wgsltool. make check skips them.
@@ -531,7 +808,7 @@ if [ "$gpu" = gpu ]; then
   done
   echo "wgsl differential: $wgsl_rows rows, $wgsl_bad mismatches"
   got=$(echo 'pick 2 4 9' | build/wgsltool "$tmp/wd/entries.wgsl" "$tmp/wd/entries.abi" 2>&1) || true
-  [ "$got" = "trap" ] || { echo "FAIL wgsl pick 2 4 9: want trap, got $got"; fail=$((fail + 1)); }
+  [ "$got" = "ARG" ] || { echo "FAIL wgsl pick 2 4 9: want ARG, got $got"; fail=$((fail + 1)); }
   # The test/wasm tables of the Makefile regressions on the WGSL module.
   for t in hash secp traps; do
     if ! build/langc --kit build "test/wasm/$t.lang" --wgsl "$tmp/wgsl-$t.wgsl" 2>"$tmp/w.err" ||
@@ -551,7 +828,7 @@ if [ "$gpu" = gpu ]; then
   # The test/ir rows on the WGSL module.
   ir_wgsl_rows=0
   ir_wgsl_bad=0
-  for m in comb lazy spine proof-trap memname; do
+  for m in comb lazy spine proof-trap memname issue-verify attest-verify bag1024; do
     [ -f "$tmp/ir/$m.in" ] || continue
     if ! build/langc --kit build "test/ir/$m.lang" --wgsl "$tmp/ir/$m.wgsl" 2>"$tmp/w.err" ||
       ! build/wgsltool "$tmp/ir/$m.wgsl" "$tmp/ir/$m.abi" <"$tmp/ir/$m.in" >"$tmp/ir/$m.gpu" 2>>"$tmp/w.err"; then

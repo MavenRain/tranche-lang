@@ -7,8 +7,8 @@
    deno in one driver program (a temp file on its stdin) that holds the module
    text and the in row of each call. A row is u32 words, low first: a Nat or
    Flag is 2 words, a U256 is 8. The out row of an entry is a status word (0
-   ok, 1 trap), the Option status of an Option entry (0 none, 1 some), then
-   the result. The driver runs the calls of each entry in
+   ok, 1 trap, 2 LIMIT, 3 ARG), the Option status of an Option entry (0
+   none, 1 some), then the result. The driver runs the calls of each entry in
    one dispatch, one invocation for each call, and prints one line per call in
    the call order; this tool checks and formats each line. */
 #ifndef _POSIX_C_SOURCE
@@ -154,8 +154,9 @@ static int put_head(FILE *f, FILE *code) {
 
 /* The driver tail: the calls of each entry go in one dispatch (at most `per`
    rows, so that the heap slices fit in one binding). An out row starts with
-   status 2, so an invocation that writes no status gives a bad line. Each
-   call gets one line: `v DIGITS`, `none`, `trap` or a bad line. */
+   status 255, so an invocation that writes no status gives a bad line. Each
+   call gets one line: `v DIGITS`, `none`, `trap`, `LIMIT`, `ARG` or a bad
+   line. */
 static void put_tail(FILE *f) {
   fputs("const out = calls.map(() => 'bad: the call does not run');\n"
         "const adapter = await navigator.gpu.requestAdapter();\n"
@@ -181,7 +182,7 @@ static void put_tail(FILE *f) {
         "  const rows = new Uint32Array(Math.max(1, n * inw));\n"
         "  const blank = new Uint32Array(n * width);\n"
         "  ids.forEach((id, j) => rows.set(calls[id].row, j * inw));\n"
-        "  ids.forEach((id, j) => blank.fill(2, j * width, j * width + (calls[id].st ? 2 : 1)));\n"
+        "  ids.forEach((id, j) => blank.fill(255, j * width, j * width + (calls[id].st ? 2 : 1)));\n"
         "  device.pushErrorScope('out-of-memory');\n"
         "  device.pushErrorScope('internal');\n"
         "  device.pushErrorScope('validation');\n"
@@ -216,7 +217,8 @@ static void put_tail(FILE *f) {
         "    ids.forEach((id, j) => {\n"
         "      const r = got.subarray(j * width, (j + 1) * width);\n"
         "      const s = calls[id].st ? 1 : 0;\n"
-        "      out[id] = r[0] === 1 ? 'trap' : r[0] !== 0 || r[s] > 1 ? 'bad: the entry writes no status' : s && r[1] === 0 ? 'none' : "
+        "      out[id] = r[0] === 1 ? 'trap' : r[0] === 2 ? 'LIMIT' : r[0] === 3 ? 'ARG' : "
+        "r[0] !== 0 || r[s] > 1 ? 'bad: the entry writes no status' : s && r[1] === 0 ? 'none' : "
         "'v ' + value(Array.from(r.subarray(1 + s))).toString();\n"
         "    });\n"
         "  } catch (e) {\n"

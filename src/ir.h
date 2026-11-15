@@ -12,7 +12,7 @@
    wrap; ADD_CARRY and MUL_CARRY give the flag of an overflow. A heap block
    is word 0 = the tag, then for field K the word at 1 + 2K and its flag at
    2 + 2K. Only an entry result is a strict position at run time: when its
-   flag is 1, the entry runs TRAP. DIV and MOD stop the call when right is
+   flag is 1, the entry runs LIMIT. DIV and MOD stop the call when right is
    0, so the lowering never gives them 0: it puts a zero divisor in the trap
    flag and divides by 1.
 
@@ -41,8 +41,8 @@ typedef enum {
   IR_OP_MUL_CARRY, /* 1 when the product is larger than 2^64 - 1, else 0 */
   IR_OP_OR,        /* bitwise or (the lowering gives it flags only) */
   IR_OP_LT,        /* 1 when left < right, else 0 */
-  IR_OP_DIV,       /* the floor of left / right; traps when right is 0 */
-  IR_OP_MOD        /* left modulo right; traps when right is 0 */
+  IR_OP_DIV,       /* the floor of left / right; right has the nonzero bit */
+  IR_OP_MOD        /* left modulo right; right has the nonzero bit */
 } IrOp;
 
 /* The prelude functions. Each takes and gives words; a U256 is a block
@@ -87,6 +87,9 @@ struct IrExpr {
   IrCall call;
   const IrExpr *const *args;
   size_t arg_count;
+  /* 1: the word is never 0 (lower.c ex_divisor). Each DIV and MOD divisor has
+     it, so the writers emit the plain division (Q-S8-3 N4). */
+  int nonzero;
 };
 
 typedef struct IrStmt IrStmt;
@@ -104,7 +107,7 @@ typedef enum {
   IR_STMT_REPEAT, /* counter := expr, then run body counter times */
   IR_STMT_WHILE,  /* counter := expr; run body while counter > 0 and local != 0,
                      counter decreasing by 1 at each run; body sets local */
-  IR_STMT_TRAP,   /* stop the call: Wasm unreachable, EVM REVERT */
+  IR_STMT_LIMIT,  /* the fail flag: status LIMIT (2), then a zero result (Q-S8-5, Q-S8-9) */
   IR_STMT_RETURN, /* return expr */
   IR_STMT_STATUS  /* the status word := expr (0 none, 1 some); only in an entry with
                      status 1, before its RETURN */
@@ -123,12 +126,12 @@ struct IrStmt {
   size_t arm_count;
 };
 
-/* One exported entry. The body block ends in RETURN or TRAP on each path.
+/* One exported entry. The body block ends in RETURN or LIMIT on each path.
    STATUS 1: the entry has an Option result (Q-S3-22). It takes one more
    argument after the parameters, the address of a status word (WGSL: a
    second word of the out row, Q-S3-23), writes 0 (none) or 1 (some) there
    and returns the payload (0 for none), with IR_STMT_STATUS before each
-   RETURN; it does not run TRAP for none. The address is not a local. */
+   RETURN; it does not run LIMIT for none. The address is not a local. */
 typedef struct {
   const char *name;
   const IrScalar *params;
@@ -137,6 +140,7 @@ typedef struct {
   uint32_t local_count; /* includes the parameters */
   IrBlock body;
   int status;
+  uint64_t heap_words; /* Q-S8-11: the memory words of its ir_bound (lower_program sets it) */
 } IrFunc;
 
 typedef struct {

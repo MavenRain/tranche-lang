@@ -1,0 +1,35 @@
+-- S8 C4 (Q-S8-35, Q-S8-36): the 1024 row. The bag rows of
+-- examples/units.lang (:67 to :91), with a holding that is a function of the
+-- entry param k. hk k is a holding with the identity key (toU256 k, 0u), and
+-- bagk k is ten `dbl` on hk k (1024 holdings). Each entry folds at lower time
+-- (ops 2, memory 0): len and makeMeasure read only the shape of the bag. The
+-- Q-S8-34 row of test/gate.sh pins these bounds (test/ir/bounds.txt).
+def gpt : Prod U256 U256 :=
+  pair 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798u 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8u
+
+def idt : Identity := makeIdentity gpt gpt nil nil
+
+def hd : Holding := makeHolding idt ctZero ctZero
+
+def dbl : FreeMon Holding -> FreeMon Holding := fun (b : FreeMon Holding) => fmMul Holding b b
+
+def b1024 : FreeMon Holding :=
+  dbl (dbl (dbl (dbl (dbl (dbl (dbl (dbl (dbl (dbl (fmEta Holding hd))))))))))
+
+def hk : Nat -> Holding :=
+  fun (k : Nat) => makeHolding (makeIdentity (pair (toU256 k) 0u) gpt nil nil) ctZero ctZero
+
+def bagk : Nat -> FreeMon Holding :=
+  fun (k : Nat) => dbl (dbl (dbl (dbl (dbl (dbl (dbl (dbl (dbl (dbl (fmEta Holding (hk k)))))))))))
+
+def natOf : Option Nat -> Nat := fun (o : Option Nat) => option 0 (fun (n : Nat) => n) o
+
+def cons1025 : Nat -> Nat := fun (k : Nat) => natOf (len Holding (fmCons Holding (hk k) b1024))
+
+def lenk : Nat -> Nat := fun (k : Nat) => natOf (len Holding (bagk k))
+
+def fullk : Nat -> Nat :=
+  fun (k : Nat) => elim (fun (x : Except Measure) => Nat) (fun (a : Measure) => 1) (fun (f : Fail) => 0) (makeMeasure (fmCons Holding (hk k) b1024) (unitsOf 100) 0u)
+
+def okk : Nat -> Nat :=
+  fun (k : Nat) => elim (fun (x : Except Measure) => Nat) (fun (a : Measure) => 1) (fun (f : Fail) => 0) (makeMeasure (bagk k) (unitsOf 100) 0u)

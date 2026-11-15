@@ -2,9 +2,9 @@
 
    Module layout:
    - Function 0 is the internal allocator `alloc (bytes : i32) -> i64`. It
-     bumps the mutable i64 global 0 (the heap pointer) over memory 0. When a
-     block does not fit, it grows the memory. When the memory cannot grow (the
-     maximum is WASM_MAX_PAGES), it traps.
+     bumps the mutable i64 global 0 (the heap pointer) over memory 0. It does
+     not grow the memory and it does not trap: memory 0 has the pages of the
+     largest entry heap bound (Q-S8-11), so each block fits.
    - Functions 1 to P are the prelude functions the module calls, in IrCall
      order. Function 1 + P + K is IR entry K, exported as its name. A Nat or
      Flag parameter or result is an i64. A U256 parameter is 4 i64, high limb
@@ -12,7 +12,8 @@
      address 0 (4 words, low limb first, as in a block), and the entry returns
      0. Each entry first resets the heap pointer to WASM_HEAP_START, after the
      result slot, and it traps on a Flag argument larger than 1. Memory 0 is
-     exported as `$memory`, so a host reads the result slot.
+     exported as `$memory`, so a host reads the result slot. Global 0 is
+     exported as `$heap`, so a host checks the heap bound (Q-S8-11).
    - A word is 8 bytes. Word K of the block at address A is at A + 8K.
 
    Each entry has three i64 scratch locals after the IR locals: S and S + 1
@@ -34,7 +35,10 @@
 
 #define WASM_MAX_PAGES 16384u /* 1 GiB, the arena limit of langc eval */
 #define WASM_DEPTH_MAX 2000u
-#define WASM_STATUS_AT 32u  /* the status word a host gives an entry with status 1 (Q-S3-22) */
+#define WASM_STATUS_AT 32u   /* the status word of each entry (Q-S3-22, Q-S8-9) */
+#define WASM_STATUS_VALUE 1u /* a value: the status of an entry without an Option result */
+#define WASM_STATUS_LIMIT 2u /* a host limit: the fail flag (Q-S8-5) */
+#define WASM_STATUS_ARG 3u   /* a bad argument: a Flag above 1 (Q-S8-7) */
 #define WASM_HEAP_START 40u /* after the U256 result slot at address 0 (Q-S8-3) and the status word */
 
 enum {
@@ -113,8 +117,6 @@ typedef struct {
   uint32_t base;  /* the Wasm local of IR local 0 (part_entry) */
   int wide;       /* the entry gives a U256: RETURN copies it to address 0 */
   unsigned calls; /* the prelude functions the module calls, one bit per IrCall */
-  int status;         /* the entry has status 1 (Q-S3-22) */
-  uint32_t status_at; /* and the Wasm local of the status address */
 } Sink;
 
 typedef int (*Part)(Sink *s, const void *arg);
@@ -1062,7 +1064,7 @@ static int emit_op(Sink *s, IrOp op, uint32_t t) {
       return put_byte(s, OP_I64_OR);
     case IR_OP_LT:
       return put_byte(s, OP_I64_LT_U) && put_byte(s, OP_I64_EXTEND_I32_U);
-    case IR_OP_DIV: /* i64.div_u traps on 0 by itself */
+    case IR_OP_DIV: /* the divisor has the nonzero bit (lower.c ex_divisor) */
       return put_byte(s, OP_I64_DIV_U);
     case IR_OP_MOD:
       return put_byte(s, OP_I64_REM_U);
@@ -1121,23 +1123,41 @@ static int result_block(Sink *s, uint32_t t) {
   return ok && i64_const(s, 0);
 }
 
-/* Blocks: exit, trap, then arm n - 1 down to arm 0 (the innermost). br_table
+/* The status word := V, an i32 at WASM_STATUS_AT (Q-S8-9). */
+static int status_store(Sink *s, uint64_t v) {
+  return i32_const(s, WASM_STATUS_AT) && i32_const(s, v) && put_byte(s, OP_I32_STORE) && put_uleb(s, 2) && put_uleb(s, 0);
+}
+
+/* A U256 result of 0 for the LIMIT path: 4 zero words at address 0. */
+static int zero_block(Sink *s) {
+  uint32_t j;
+  int ok = 1;
+  for (j = 0; j < 4u && ok; j++) ok = i32_const(s, 0) && i64_const(s, 0) && memarg(s, OP_I64_STORE, j);
+  return ok;
+}
+
+/* Blocks: exit, then arm n - 1 down to arm 0 (the innermost). br_table
    label k ends the block of arm k, so the code of arm k follows. A value of
-   n or more takes label n, the trap block. After arm k, label n - k is the
-   exit block. */
+   n or more takes label n - 1, the last arm: a sum tag is < n (tags come
+   only from constructors), so this is the total form (Q-S8-3). After arm k,
+   label n - 1 - k is the exit block. With no arms no value reaches the
+   switch, so it has no code. */
 static int emit_switch(Sink *s, const IrStmt *st, uint32_t t, unsigned depth) {
   size_t k;
   size_t n = st->arm_count;
-  int ok = put_byte(s, OP_BLOCK) && put_byte(s, TYPE_EMPTY) && put_byte(s, OP_BLOCK) && put_byte(s, TYPE_EMPTY);
+  int ok;
+  if (n == 0) return 1;
+  ok = put_byte(s, OP_BLOCK) && put_byte(s, TYPE_EMPTY);
   for (k = 0; k < n && ok; k++) ok = put_byte(s, OP_BLOCK) && put_byte(s, TYPE_EMPTY);
   ok = ok && emit_expr(s, st->expr, t, depth + 1u) && op2(s, OP_LOCAL_TEE, t) && put_byte(s, OP_I32_WRAP_I64) &&
-       i32_const(s, n) && op2(s, OP_LOCAL_GET, t) && i64_const(s, n) && put_byte(s, OP_I64_LT_U) &&
+       i32_const(s, n - 1u) && op2(s, OP_LOCAL_GET, t) && i64_const(s, n) && put_byte(s, OP_I64_LT_U) &&
        put_byte(s, OP_SELECT) && op2(s, OP_BR_TABLE, n);
-  for (k = 0; k <= n && ok; k++) ok = put_uleb(s, k);
+  for (k = 0; k < n && ok; k++) ok = put_uleb(s, k);
+  ok = ok && put_uleb(s, n - 1u);
   for (k = 0; k < n && ok; k++) {
-    ok = put_byte(s, OP_END) && emit_block(s, &st->arms[k], t, depth + 1u) && op2(s, OP_BR, n - k);
+    ok = put_byte(s, OP_END) && emit_block(s, &st->arms[k], t, depth + 1u) && op2(s, OP_BR, n - 1u - k);
   }
-  return ok && put_byte(s, OP_END) && put_byte(s, OP_UNREACHABLE) && put_byte(s, OP_END);
+  return ok && put_byte(s, OP_END);
 }
 
 /* counter := expr; then, at the top of each run, leave when counter = 0 or
@@ -1169,12 +1189,12 @@ static int emit_stmt(Sink *s, const IrStmt *st, uint32_t t, unsigned depth) {
       return emit_loop(s, st, 0, t, depth);
     case IR_STMT_WHILE:
       return emit_loop(s, st, 1, t, depth);
-    case IR_STMT_TRAP:
-      return put_byte(s, OP_UNREACHABLE);
+    case IR_STMT_LIMIT: /* the fail flag: status LIMIT, then a zero result (Q-S8-5, Q-S8-9) */
+      return status_store(s, WASM_STATUS_LIMIT) && (!s->wide || zero_block(s)) && i64_const(s, 0) &&
+             put_byte(s, OP_RETURN);
     case IR_STMT_STATUS:
-      return s->status ? op2(s, OP_LOCAL_GET, s->status_at) && emit_expr(s, st->expr, t, depth + 1u) &&
-                             put_byte(s, OP_I32_WRAP_I64) && put_byte(s, OP_I32_STORE) && put_uleb(s, 2) && put_uleb(s, 0)
-                       : no_code(s, "statement", (unsigned)st->kind);
+      return i32_const(s, WASM_STATUS_AT) && emit_expr(s, st->expr, t, depth + 1u) && put_byte(s, OP_I32_WRAP_I64) &&
+             put_byte(s, OP_I32_STORE) && put_uleb(s, 2) && put_uleb(s, 0);
     case IR_STMT_RETURN:
       return emit_expr(s, st->expr, t, depth + 1u) && (!s->wide || result_block(s, t)) && put_byte(s, OP_RETURN);
   }
@@ -1188,21 +1208,12 @@ static int emit_block(Sink *s, const IrBlock *b, uint32_t t, unsigned depth) {
   return ok;
 }
 
-/* alloc (bytes : i32) -> i64, local 1 = the new end:
-   old := heap; end := old + bytes; if end > memory bytes { grow by
-   ceil(end / 65536) - pages; trap on -1 }; heap := end; return old. */
+/* alloc (bytes : i32) -> i64: old := heap; heap := old + bytes; return old.
+   No grow and no trap: memory 0 has the pages of the bound (Q-S8-11). */
 static int part_alloc(Sink *s, const void *arg) {
   (void)arg;
-  return put_uleb(s, 1) && put_uleb(s, 1) && put_byte(s, TYPE_I64) && op2(s, OP_GLOBAL_GET, 0) &&
-         op2(s, OP_GLOBAL_GET, 0) && op2(s, OP_LOCAL_GET, 0) && put_byte(s, OP_I64_EXTEND_I32_U) &&
-         put_byte(s, OP_I64_ADD) && op2(s, OP_LOCAL_TEE, 1) && op2(s, OP_MEMORY_SIZE, 0) &&
-         put_byte(s, OP_I64_EXTEND_I32_U) && i64_const(s, 16) && put_byte(s, OP_I64_SHL) && put_byte(s, OP_I64_GT_U) &&
-         put_byte(s, OP_IF) && put_byte(s, TYPE_EMPTY) && op2(s, OP_LOCAL_GET, 1) && i64_const(s, 65535) &&
-         put_byte(s, OP_I64_ADD) && i64_const(s, 16) && put_byte(s, OP_I64_SHR_U) && op2(s, OP_MEMORY_SIZE, 0) &&
-         put_byte(s, OP_I64_EXTEND_I32_U) && put_byte(s, OP_I64_SUB) && put_byte(s, OP_I32_WRAP_I64) &&
-         op2(s, OP_MEMORY_GROW, 0) && i32_const(s, ~(uint64_t)0) && put_byte(s, OP_I32_EQ) && put_byte(s, OP_IF) &&
-         put_byte(s, TYPE_EMPTY) && put_byte(s, OP_UNREACHABLE) && put_byte(s, OP_END) && put_byte(s, OP_END) &&
-         op2(s, OP_LOCAL_GET, 1) && op2(s, OP_GLOBAL_SET, 0) && put_byte(s, OP_END);
+  return put_uleb(s, 0) && op2(s, OP_GLOBAL_GET, 0) && op2(s, OP_GLOBAL_GET, 0) && op2(s, OP_LOCAL_GET, 0) &&
+         put_byte(s, OP_I64_EXTEND_I32_U) && put_byte(s, OP_I64_ADD) && op2(s, OP_GLOBAL_SET, 0) && put_byte(s, OP_END);
 }
 
 /* The Wasm parameters of FN: 4 per U256, 1 per Nat or Flag. */
@@ -1213,11 +1224,13 @@ static uint32_t wasm_params(const IrFunc *fn) {
   return w;
 }
 
-/* Traps when the Flag parameter K (Wasm local POS) is larger than 1. */
+/* When the Flag parameter K (Wasm local POS) is larger than 1: status ARG,
+   then a zero result (as the LIMIT statement), then return (Q-S8-7). */
 static int flag_guard(Sink *s, const IrFunc *fn, size_t k, uint32_t pos) {
   return fn->params[k] != IR_SCALAR_FLAG ||
          (op2(s, OP_LOCAL_GET, pos) && i64_const(s, 1) && put_byte(s, OP_I64_GT_U) && put_byte(s, OP_IF) &&
-          put_byte(s, TYPE_EMPTY) && put_byte(s, OP_UNREACHABLE) && put_byte(s, OP_END));
+          put_byte(s, TYPE_EMPTY) && status_store(s, WASM_STATUS_ARG) && (!s->wide || zero_block(s)) &&
+          i64_const(s, 0) && put_byte(s, OP_RETURN) && put_byte(s, OP_END));
 }
 
 /* Wasm local DST := a new block; word 3 - J := Wasm parameter POS + J (high
@@ -1242,27 +1255,27 @@ static int entry_param(Sink *s, const IrFunc *fn, size_t k, uint32_t pos) {
                                 : (op2(s, OP_LOCAL_GET, pos) && op2(s, OP_LOCAL_SET, dst))));
 }
 
-/* An entry with status 1 takes the status address (an i32) after the
-   others, so each IR local moves past it (a base), as with a U256. */
+/* Each entry writes the status word at WASM_STATUS_AT (Q-S8-9): an entry
+   without an Option result stores 1 first, an Option entry stores it at its
+   STATUS statements, the fail flag stores LIMIT, and a Flag argument above 1
+   stores ARG (flag_guard, Q-S8-7). The body ends in RETURN
+   (lower.c); the i64 zero after it is for the validator, not an
+   `unreachable` (Q-S8-3). */
 static int part_entry(Sink *s, const void *arg) {
   const IrFunc *fn = arg;
-  uint32_t w = wasm_params(fn);
-  uint32_t p = w + (fn->status ? 1u : 0u); /* with the status address */
+  uint32_t p = wasm_params(fn);
   uint32_t pos = 0;
   size_t k;
   int ok;
   s->base = p == fn->param_count ? 0u : p;
   s->wide = fn->result == IR_SCALAR_U256;
-  s->status = fn->status;
-  s->status_at = w;
   ok = put_uleb(s, 1) && put_uleb(s, (uint64_t)s->base + fn->local_count + 3u - p) && put_byte(s, TYPE_I64) &&
-       i64_const(s, WASM_HEAP_START) && op2(s, OP_GLOBAL_SET, 0);
+       i64_const(s, WASM_HEAP_START) && op2(s, OP_GLOBAL_SET, 0) && (fn->status || status_store(s, WASM_STATUS_VALUE));
   for (k = 0; k < fn->param_count && ok; k++) {
     ok = entry_param(s, fn, k, pos);
     pos += fn->params[k] == IR_SCALAR_U256 ? 4u : 1u;
   }
-  return ok && emit_block(s, &fn->body, s->base + fn->local_count, 0) && put_byte(s, OP_UNREACHABLE) &&
-         put_byte(s, OP_END);
+  return ok && emit_block(s, &fn->body, s->base + fn->local_count, 0) && i64_const(s, 0) && put_byte(s, OP_END);
 }
 
 /* The prelude functions the IR calls, one bit per IrCall. */
@@ -1308,7 +1321,7 @@ static unsigned calls_stmt(const IrStmt *st, unsigned depth) {
     case IR_STMT_REPEAT:
     case IR_STMT_WHILE:
       return calls_expr(st->expr, depth + 1u) | calls_block(&st->body, depth + 1u);
-    case IR_STMT_TRAP:
+    case IR_STMT_LIMIT:
       return 0;
   }
   return 0;
@@ -1340,14 +1353,10 @@ static int func_type(Sink *s, uint64_t n) {
   return ok && put_uleb(s, 1) && put_byte(s, TYPE_I64);
 }
 
-/* (i64 x N) -> i64 for entry FN; with status 1, an i32 (the status address)
-   after the N. */
+/* (i64 x N) -> i64 for entry FN. The status word has a fixed address
+   (WASM_STATUS_AT), not a parameter (Q-S8-9). */
 static int entry_type(Sink *s, const IrFunc *fn) {
-  uint32_t n = wasm_params(fn);
-  uint32_t k;
-  int ok = put_byte(s, TYPE_FUNC) && put_uleb(s, (uint64_t)n + (fn->status ? 1u : 0u));
-  for (k = 0; k < n && ok; k++) ok = put_byte(s, TYPE_I64);
-  return ok && (!fn->status || put_byte(s, TYPE_I32)) && put_uleb(s, 1) && put_byte(s, TYPE_I64);
+  return func_type(s, wasm_params(fn));
 }
 
 /* Function I has type I: the allocator, the prelude functions, the entries. */
@@ -1370,9 +1379,18 @@ static int part_functions(Sink *s, const void *arg) {
   return ok;
 }
 
+/* Memory 0 has a fixed size (Q-S8-6, Q-S8-11): the pages of the largest entry
+   heap bound (WASM_HEAP_START + 8 bytes a word), at least 1. lower.c refuses a
+   bound past Wasm32, so the count is at most 65536. */
 static int part_memory(Sink *s, const void *arg) {
-  (void)arg;
-  return put_uleb(s, 1) && put_byte(s, 1) && put_uleb(s, 1) && put_uleb(s, WASM_MAX_PAGES);
+  const IrProgram *prog = arg;
+  uint64_t pages = 1u;
+  size_t i;
+  for (i = 0; i < prog->func_count; i++) {
+    uint64_t need = (WASM_HEAP_START + 8u * prog->funcs[i].heap_words + 65535u) / 65536u;
+    pages = need > pages ? need : pages;
+  }
+  return put_uleb(s, 1) && put_byte(s, 1) && put_uleb(s, pages) && put_uleb(s, pages);
 }
 
 static int part_global(Sink *s, const void *arg) {
@@ -1383,13 +1401,15 @@ static int part_global(Sink *s, const void *arg) {
 static int part_exports(Sink *s, const void *arg) {
   const IrProgram *prog = arg;
   size_t i;
-  int ok = put_uleb(s, prog->func_count + 1u);
+  int ok = put_uleb(s, prog->func_count + 2u);
   for (i = 0; i < prog->func_count && ok; i++) {
     ok = put_name(s, prog->funcs[i].name) && put_byte(s, 0) && put_uleb(s, 1u + ones(s->calls) + i);
   }
   /* Memory 0, so a host reads a U256 result at 0..31 (Q-S8-3, M8). The name is
      not a tranche name, so no entry export can take it (item 4). */
-  return ok && put_name(s, "$memory") && put_byte(s, 2) && put_uleb(s, 0);
+  /* Global 0, the heap pointer, so a host checks the heap bound (Q-S8-11). */
+  return ok && put_name(s, "$memory") && put_byte(s, 2) && put_uleb(s, 0) && put_name(s, "$heap") && put_byte(s, 3) &&
+         put_uleb(s, 0);
 }
 
 static int part_prelude(Sink *s, const void *arg) {
@@ -1423,8 +1443,9 @@ static const char *abi_shape(IrScalar sc, int is_result) {
 }
 
 /* NAME (PARAM, ...) -> RESULT, with the Wasm shape of each U256 (Q-S8-3). An
-   Option result (status 1) starts with the address of its status word, the
-   last i32 param (0 none, 1 some; Q-S3-22, Q-S3-23). */
+   Option result (status 1) starts with the address of its status word (0
+   none, 1 some; Q-S3-22, Q-S3-23). Each entry writes that word at the fixed
+   address WASM_STATUS_AT: 1 a value, 2 LIMIT, 3 ARG (Q-S8-9). */
 int target_abi_line(const IrFunc *fn, FILE *out, FILE *err) {
   size_t k;
   (void)err;
@@ -1439,14 +1460,14 @@ int target_abi_line(const IrFunc *fn, FILE *out, FILE *err) {
 /* Both parts are the module bytes. */
 int target_write(const IrProgram *prog, TargetPart part, FILE *out, FILE *err) {
   static const unsigned char header[8] = {0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00};
-  Sink s = {out, 0, err, 0, 0, 0, 0, 0};
+  Sink s = {out, 0, err, 0, 0, 0};
   size_t i;
   int ok = 1;
   (void)part;
   s.calls = program_calls(prog);
   for (i = 0; i < sizeof header && ok; i++) ok = put_byte(&s, header[i]);
   ok = ok && section(&s, SECTION_TYPE, part_types, prog) && section(&s, SECTION_FUNCTION, part_functions, prog) &&
-       section(&s, SECTION_MEMORY, part_memory, NULL) && section(&s, SECTION_GLOBAL, part_global, NULL) &&
+       section(&s, SECTION_MEMORY, part_memory, prog) && section(&s, SECTION_GLOBAL, part_global, NULL) &&
        section(&s, SECTION_EXPORT, part_exports, prog) && section(&s, SECTION_CODE, part_code, prog);
   if (!ok && ferror(out)) fputs("langc: IO: -: cannot write the wasm module\n", err);
   return ok;

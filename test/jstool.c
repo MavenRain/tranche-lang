@@ -149,10 +149,12 @@ static void put_module_url(FILE *f, const char *path) {
   fputc('"', f);
 }
 
-/* The driver head: it loads the module at PATH, and c(f, st) adds the result
-   line of one call: for an Option entry (ST, preset to 2) `none` for status
-   0, `v DIGITS` for a BigInt result, `trap` for an Error with the message
-   TRAP, else a bad line. */
+/* The driver head: it loads the module at PATH, and c(f, opt) adds the result
+   line of one call. The export "$status" is preset to 255 (no status) before
+   each call and read after it (Q-S8-8): 2 `LIMIT`, 3 `ARG`, 0 `none` for an
+   Option entry (OPT 1), 1 `v DIGITS` for a BigInt result. `trap` is an Error
+   with the message TRAP; any other value gives a bad line. With the export
+   $ops (the count mode, Q-S8-32) a tab and `ops N` end the line. */
 static void put_head(FILE *f, const char *path) {
   /* Dynamic import calls an export named then as a Promise callback. A
      static namespace import preserves every legal Tranche entry name. */
@@ -160,13 +162,17 @@ static void put_head(FILE *f, const char *path) {
   put_module_url(f, path);
   fputs(";\n"
         "const out = [];\n"
-        "const c = (f, st) => {\n"
+        "const ops = () => ('$ops' in m ? '\\tops ' + m['$ops'] : '');\n"
+        "const c = (f, opt) => {\n"
         "  try {\n"
-        "    const r = f(st);\n"
-        "    out.push(st !== undefined && st[0] !== 1 ? (st[0] === 0 ? 'none' : 'bad: the entry writes no status')\n"
-        "      : typeof r === 'bigint' ? 'v ' + r.toString() : 'bad: the result is not a BigInt');\n"
+        "    m['$status'][0] = 255;\n"
+        "    const r = f();\n"
+        "    const s = m['$status'][0];\n"
+        "    out.push((s === 2 ? 'LIMIT' : s === 3 ? 'ARG' : s === 0 && opt === 1 ? 'none'\n"
+        "      : s !== 1 ? 'bad: the entry writes no status'\n"
+        "      : typeof r === 'bigint' ? 'v ' + r.toString() : 'bad: the result is not a BigInt') + ops());\n"
         "  } catch (e) {\n"
-        "    out.push(e instanceof Error && e.message === 'TRAP' ? 'trap' : 'bad: the entry does not run');\n"
+        "    out.push((e instanceof Error && e.message === 'TRAP' ? 'trap' : 'bad: the entry does not run') + ops());\n"
         "  }\n"
         "};\n",
         f);
@@ -195,7 +201,7 @@ static Call read_call(const Abi *abi, char *line, FILE *f) {
     call.kind = CALL_BAD_ARG;
     return call;
   }
-  fputs(e->status ? "c((st) => m[" : "c(() => m[", f);
+  fputs("c(() => m[", f);
   put_js_string(f, e->name);
   fputs("](", f);
   for (k = 0; k < e->param_count; k++) {
@@ -205,7 +211,7 @@ static Call read_call(const Abi *abi, char *line, FILE *f) {
               wide[k].limb[1], wide[k].limb[0]);
     if (!e->wide_param[k]) fprintf(f, "%" PRIu64 "n", narrow[k]);
   }
-  fputs(!e->status ? "));\n" : e->param_count > 0 ? ", st), Int32Array.of(2));\n" : "st), Int32Array.of(2));\n", f);
+  fputs(e->status ? "), 1);\n" : "), 0);\n", f);
   call.kind = e->wide_result ? CALL_WIDE : CALL_WORD;
   return call;
 }
@@ -316,11 +322,16 @@ int main(int argc, char **argv) {
     unlink(tmpl);
     return fail2("node", "does not start");
   }
+  /* The count mode (Q-S8-32): the `ops N` text after a tab is a second row. */
   for (k = 0; k < calls; k++) {
     int to_node = call[k].kind == CALL_WORD || call[k].kind == CALL_WIDE;
     int got = to_node && fgets(line, sizeof line, node) != NULL;
+    char *ops;
     line[got ? strcspn(line, "\n") : 0] = '\0';
+    ops = strchr(line, '\t');
+    if (ops != NULL) *ops++ = '\0';
     print_result(&call[k], got ? line : NULL);
+    if (ops != NULL) printf("%s\n", ops);
   }
   status = pclose(node);
   unlink(tmpl);

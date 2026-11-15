@@ -4,15 +4,21 @@
    - The runtime. A word is a BigInt from 0 to 2^64 - 1. A heap block is a
      run of words in the array H, and its address is the BigInt index of word
      0. Each entry first resets H to 4 zero words (wasm.c WASM_HEAP_START / 8),
-     so address 0 is the null block as in wasm.c. alloc traps when H has more
-     words than WASM_MAX_PAGES give. The word ops follow ir.h.
+     so address 0 is the null block as in wasm.c. alloc has no limit check:
+     the Wasm heap bound fits it (Q-S8-11). The word ops follow ir.h.
    - The prelude: the IrCall functions that the module calls, in IrCall order
      (wasm.c functions 1 to P), on BigInt values. A U256 is a block of 4
      words, low limb first. A point is a pair block [0, x, 0, y, 0].
    - One export per IR entry, with its name. A Nat or Flag parameter or result
      is a BigInt. A U256 parameter is a BigInt below 2^256, copied to a new
-     block; a U256 result is a BigInt. A Flag argument larger than 1 traps, as
-     in wasm.c. A trap throws an Error with the message 'TRAP'.
+     block; a U256 result is a BigInt. An entry checks its arguments first
+     (Q-S8-7): a non-BigInt, a value out of range or a Flag larger than 1
+     stores ARG and gives 0n, as in wasm.c. A trap throws an Error with the
+     message 'TRAP'.
+   - The export "$status", an Int32Array(1) (Q-S8-8). Each entry writes its
+     status word there: 1 a value, 0 none (an Option entry only), 2 LIMIT
+     or 3 ARG (the result is 0n). No entry takes a status parameter. A
+     Tranche name has no `$`, so the export name is free.
    Traps are lazy as in wasm.c: the lowering gives each value its trap flag,
    and only an entry result is strict, so the module has no trap values. The
    prelude allocates no scratch blocks, so only IR blocks count to the heap
@@ -29,7 +35,7 @@ typedef struct {
   IrScalar result; /* the result of the entry being written */
   int said;        /* 1 after a message on err */
   int ok;
-  int status; /* the entry takes st, an Int32Array(1) (Q-S3-22) */
+  int count;       /* 1: the count mode (Q-S8-32): the module counts the IR units that run */
 } Js;
 
 static const char *const RUNTIME[] = {
@@ -38,17 +44,13 @@ static const char *const RUNTIME[] = {
   "const M256 = (1n << 256n) - 1n;",
   "// The words before the first block (wasm.c WASM_HEAP_START / 8): address 0 is the null block.",
   "const HEAP_START = 4;",
-  "// The heap limit in words: wasm.c WASM_MAX_PAGES pages of 64 KiB, 8 bytes a word.",
-  "const HEAP_WORDS = 134217728;",
   "let H = [];",
-  "const trap = () => {",
-  "  throw new Error('TRAP');",
-  "};",
+  "// The status word (Q-S8-8), exported as $status: 1 a value, 0 none, 2 LIMIT, 3 ARG.",
+  "const STATUS = new Int32Array(1);",
   "const reset = () => {",
   "  H = new Array(HEAP_START).fill(0n);",
   "};",
   "const alloc = (words) => {",
-  "  if (H.length + words.length > HEAP_WORDS) trap();",
   "  const a = BigInt(H.length);",
   "  H.push(...words);",
   "  return a;",
@@ -63,8 +65,9 @@ static const char *const RUNTIME[] = {
   "const wMulCarry = (a, b) => (a * b > M64 ? 1n : 0n);",
   "const wOr = (a, b) => a | b;",
   "const wLt = (a, b) => (a < b ? 1n : 0n);",
-  "const wDiv = (a, b) => (b === 0n ? trap() : a / b);",
-  "const wMod = (a, b) => (b === 0n ? trap() : a % b);",
+  "// Each divisor is not 0 (lower.c ex_divisor, N4).",
+  "const wDiv = (a, b) => a / b;",
+  "const wMod = (a, b) => a % b;",
   "// A U256 is a block of 4 words, low limb first.",
   "const big = (a) => [0, 1, 2, 3].reduce((v, k) => v | (ld(a, k) << BigInt(64 * k)), 0n);",
   "const block = (v) => alloc([0, 1, 2, 3].map((k) => (v >> BigInt(64 * k)) & M64));",
@@ -77,13 +80,13 @@ static const char *const RUNTIME[] = {
   "  }",
   "  return r;",
   "};",
-  "const word = (v, max) => {",
-  "  if (typeof v !== 'bigint' || v < 0n || v > max) throw new RangeError('ARG: an argument must be a BigInt from 0 to ' + max);",
-  "  return v;",
-  "};",
-  "const natArg = (v) => word(v, M64);",
-  "const flagArg = (v) => (word(v, M64) > 1n ? trap() : v);",
-  "const u256Arg = (v) => block(word(v, M256));",
+  "// The argument checks (Q-S8-7): a BigInt from 0 to the top of its scalar. An entry checks its",
+  "// arguments first and, on a bad one, stores ARG (3) in STATUS and returns 0n; it does not throw.",
+  "const argOk = (v, max) => typeof v === 'bigint' && v >= 0n && v <= max;",
+  "const natOk = (v) => argOk(v, M64);",
+  "const flagOk = (v) => argOk(v, 1n);",
+  "const u256Ok = (v) => argOk(v, M256);",
+  "const u256Arg = (v) => block(v);",
 };
 
 static const char *const SHA_PART[] = {
@@ -299,9 +302,19 @@ static const char *op_name(IrOp op) {
 
 static const char *arg_name(IrScalar t) {
   switch (t) {
-    case IR_SCALAR_NAT: return "natArg";
-    case IR_SCALAR_FLAG: return "flagArg";
+    case IR_SCALAR_NAT: return "";
+    case IR_SCALAR_FLAG: return "";
     case IR_SCALAR_U256: return "u256Arg";
+  }
+  return NULL;
+}
+
+/* The argument check of a scalar T (Q-S8-7). */
+static const char *arg_check(IrScalar t) {
+  switch (t) {
+    case IR_SCALAR_NAT: return "natOk";
+    case IR_SCALAR_FLAG: return "flagOk";
+    case IR_SCALAR_U256: return "u256Ok";
   }
   return NULL;
 }
@@ -346,7 +359,7 @@ static unsigned calls_stmt(const IrStmt *st) {
     case IR_STMT_REPEAT:
     case IR_STMT_WHILE:
       return calls_expr(st->expr) | calls_block(&st->body);
-    case IR_STMT_TRAP:
+    case IR_STMT_LIMIT:
       return 0;
   }
   return 0;
@@ -404,7 +417,53 @@ static int emit_loop(Js *o, const IrStmt *st, int is_while, unsigned depth) {
          put(o, " -= 1n;\n") && indent(o, depth) && put(o, "}\n");
 }
 
-static int emit_stmt(Js *o, const IrStmt *st, unsigned depth) {
+/* The IR units of the expression E in the count mode (Q-S8-32): the ops of
+   expr_bound in src/front/lower.c, 1 for each node. A copy, because
+   build/entrytest links js.c without lower.c. No sum saturates: a tree in
+   memory has fewer than 2^64 nodes. */
+static uint64_t expr_ops(const IrExpr *e) {
+  uint64_t n = 1u;
+  size_t i;
+  switch (e->kind) {
+    case IR_EXPR_CONST:
+    case IR_EXPR_LOCAL:
+      return n;
+    case IR_EXPR_BINARY:
+      return n + expr_ops(e->left) + expr_ops(e->right);
+    case IR_EXPR_LOAD:
+      return n + expr_ops(e->left);
+    case IR_EXPR_CALL:
+      for (i = 0; i < e->arg_count; i++) n += expr_ops(e->args[i]);
+      return n;
+  }
+  return n;
+}
+
+/* K(s) of the count mode (Q-S8-32): 1 for the statement ST and the units of
+   its own expressions, as stmt_bound in src/front/lower.c without the arms
+   and the bodies (each statement of those counts when it runs). */
+static uint64_t stmt_ops(const IrStmt *st) {
+  uint64_t n = 1u;
+  size_t k;
+  switch (st->kind) {
+    case IR_STMT_ALLOC:
+      for (k = 0; k < st->field_count; k++) n += expr_ops(st->fields[k]);
+      return n;
+    case IR_STMT_LIMIT:
+      return n;
+    case IR_STMT_SET:
+    case IR_STMT_IF:
+    case IR_STMT_SWITCH:
+    case IR_STMT_REPEAT:
+    case IR_STMT_WHILE:
+    case IR_STMT_STATUS:
+    case IR_STMT_RETURN:
+      return n + expr_ops(st->expr);
+  }
+  return n;
+}
+
+static int emit_stmt_text(Js *o, const IrStmt *st, unsigned depth) {
   size_t k;
   int ok;
   switch (st->kind) {
@@ -419,27 +478,37 @@ static int emit_stmt(Js *o, const IrStmt *st, unsigned depth) {
              emit_block(o, &st->body, depth + 1u) && indent(o, depth) && put(o, "} else {\n") &&
              emit_block(o, &st->otherwise, depth + 1u) && indent(o, depth) && put(o, "}\n");
     case IR_STMT_SWITCH:
+      /* The last arm takes the default label (the wasm.c emit_switch form,
+         Q-S8-3): a tag is < n, so the switch is total and has no trap. */
       ok = indent(o, depth) && put(o, "switch (") && emit_expr(o, st->expr) && put(o, ") {\n");
       for (k = 0; k < st->arm_count && ok; k++) {
-        ok = indent(o, depth + 1u) && put(o, "case ") && put_u64(o, (uint64_t)k) && put(o, "n:\n") &&
+        ok = indent(o, depth + 1u) &&
+             (k + 1u == st->arm_count ? put(o, "default:\n")
+                                      : put(o, "case ") && put_u64(o, (uint64_t)k) && put(o, "n:\n")) &&
              emit_block(o, &st->arms[k], depth + 2u) && indent(o, depth + 2u) && put(o, "break;\n");
       }
-      return ok && indent(o, depth + 1u) && put(o, "default:\n") && indent(o, depth + 2u) && put(o, "trap();\n") &&
-             indent(o, depth) && put(o, "}\n");
+      return ok && indent(o, depth) && put(o, "}\n");
     case IR_STMT_REPEAT:
       return emit_loop(o, st, 0, depth);
     case IR_STMT_WHILE:
       return emit_loop(o, st, 1, depth);
-    case IR_STMT_TRAP:
-      return indent(o, depth) && put(o, "trap();\n");
+    case IR_STMT_LIMIT:
+      return indent(o, depth) && put(o, "STATUS[0] = 2;\n") && indent(o, depth) && put(o, "return 0n;\n");
     case IR_STMT_STATUS:
-      return o->status ? indent(o, depth) && put(o, "st[0] = Number(") && emit_expr(o, st->expr) && put(o, ");\n")
-                       : no_code(o, "statement", (unsigned)st->kind);
+      return indent(o, depth) && put(o, "STATUS[0] = Number(") && emit_expr(o, st->expr) && put(o, ");\n");
     case IR_STMT_RETURN:
       return indent(o, depth) && put(o, o->result == IR_SCALAR_U256 ? "return big(" : "return ") &&
              emit_expr(o, st->expr) && put(o, o->result == IR_SCALAR_U256 ? ");\n" : ";\n");
   }
   return no_code(o, "statement", (unsigned)st->kind);
+}
+
+/* The statement ST; in the count mode its IR units first (stmt_ops). The
+   units of a block are the units of the statements that run, so the count
+   of an entry is at most its ops bound (Q-S8-32). */
+static int emit_stmt(Js *o, const IrStmt *st, unsigned depth) {
+  return (!o->count || (indent(o, depth) && put(o, "OPS += ") && put_u64(o, stmt_ops(st)) && put(o, ";\n"))) &&
+         emit_stmt_text(o, st, depth);
 }
 
 static int emit_block(Js *o, const IrBlock *b, unsigned depth) {
@@ -449,8 +518,24 @@ static int emit_block(Js *o, const IrBlock *b, unsigned depth) {
   return ok;
 }
 
-/* Entry INDEX as `function eINDEX(a0, ...)`: it resets the heap, checks and
-   copies the arguments into the IR locals, then runs the body. */
+/* The argument checks of FN, before the body (Q-S8-7): on a bad argument the
+   entry stores ARG (3) and returns 0n, as wasm.c flag_guard. */
+static int emit_arg_check(Js *o, const IrFunc *fn) {
+  const char *check;
+  size_t i;
+  int ok = fn->param_count == 0u || put(o, "  if (!(");
+  for (i = 0; i < fn->param_count && ok; i++) {
+    check = arg_check(fn->params[i]);
+    ok = check == NULL ? no_code(o, "scalar", (unsigned)fn->params[i])
+                       : (i == 0 || put(o, " && ")) && put(o, check) && put(o, "(a") && put_u64(o, (uint64_t)i) &&
+                             put(o, ")");
+  }
+  return ok && (fn->param_count == 0u || put(o, ")) {\n    STATUS[0] = 3;\n    return 0n;\n  }\n"));
+}
+
+/* Entry INDEX as `function eINDEX(a0, ...)`: it resets the heap, sets
+   STATUS[0] to 1 if the entry has no Option result, checks the arguments,
+   copies them into the IR locals, then runs the body. */
 static int emit_func(Js *o, const IrFunc *fn, size_t index) {
   size_t i;
   const char *conv;
@@ -458,8 +543,8 @@ static int emit_func(Js *o, const IrFunc *fn, size_t index) {
   o->result = fn->result;
   ok = put(o, "\nfunction e") && put_u64(o, (uint64_t)index) && put(o, "(");
   for (i = 0; i < fn->param_count && ok; i++) ok = (i == 0 || put(o, ", ")) && put(o, "a") && put_u64(o, (uint64_t)i);
-  o->status = fn->status;
-  ok = ok && (!fn->status || put(o, fn->param_count == 0 ? "st" : ", st")) && put(o, ") {\n  reset();\n");
+  ok = ok && put(o, ") {\n  reset();\n") && (!o->count || put(o, "  OPS = 0;\n")) &&
+       (fn->status || put(o, "  STATUS[0] = 1;\n")) && emit_arg_check(o, fn);
   for (i = 0; i < fn->local_count && ok; i++) {
     conv = i < fn->param_count ? arg_name(fn->params[i]) : "";
     ok = conv == NULL ? no_code(o, "scalar", (unsigned)fn->params[i])
@@ -471,7 +556,8 @@ static int emit_func(Js *o, const IrFunc *fn, size_t index) {
   return ok && emit_block(o, &fn->body, 1u) && put(o, "}\n");
 }
 
-int js_write(const IrProgram *prog, FILE *out, FILE *err) {
+/* The ES module of PROG; COUNT 1 is the count mode (js_write_count). */
+static int write_module(const IrProgram *prog, int count, FILE *out, FILE *err) {
   Js o;
   unsigned used = 0;
   unsigned needs = 0;
@@ -480,9 +566,9 @@ int js_write(const IrProgram *prog, FILE *out, FILE *err) {
   o.out = out;
   o.err = err;
   o.result = IR_SCALAR_NAT;
-  o.status = 0;
   o.said = 0;
   o.ok = 1;
+  o.count = count;
   for (i = 0; i < prog->func_count; i++) used |= calls_block(&prog->funcs[i].body);
   for (i = 0; i < CALL_COUNT; i++) needs |= ((used >> CALLS[i].call) & 1u) ? CALLS[i].needs : 0u;
   for (i = 0; i < CALL_COUNT && ok; i++) ok = !((used >> CALLS[i].call) & 1u) || CALLS[i].def != NULL;
@@ -491,18 +577,27 @@ int js_write(const IrProgram *prog, FILE *out, FILE *err) {
     return 0;
   }
   ok = put_lines(&o, RUNTIME, sizeof RUNTIME / sizeof RUNTIME[0]) &&
+       (!o.count || put(&o, "// The IR units that run (the count mode, Q-S8-32).\nlet OPS = 0;\n")) &&
        (!(needs & NEED_SHA) || put_lines(&o, SHA_PART, sizeof SHA_PART / sizeof SHA_PART[0])) &&
        (!(needs & NEED_EC) || put_lines(&o, EC_PART, sizeof EC_PART / sizeof EC_PART[0]));
   for (i = 0; i < CALL_COUNT && ok; i++) {
     ok = !((used >> CALLS[i].call) & 1u) || (put(&o, CALLS[i].def) && put(&o, "\n"));
   }
   for (i = 0; i < prog->func_count && ok; i++) ok = emit_func(&o, &prog->funcs[i], i);
-  ok = ok && put(&o, "\nexport {");
+  ok = ok && put(&o, "\nexport { STATUS as '$status'") && (!o.count || put(&o, ", OPS as '$ops'"));
   for (i = 0; i < prog->func_count && ok; i++) {
-    ok = put(&o, i == 0 ? " e" : ", e") && put_u64(&o, (uint64_t)i) && put(&o, " as ") &&
+    ok = put(&o, ", e") && put_u64(&o, (uint64_t)i) && put(&o, " as ") &&
          put_quoted(&o, prog->funcs[i].name);
   }
   ok = ok && put(&o, " };\n");
   if (!ok && !o.said) fprintf(err, "IO: the JS module write failed\n");
   return ok;
+}
+
+int js_write(const IrProgram *prog, FILE *out, FILE *err) {
+  return write_module(prog, 0, out, err);
+}
+
+int js_write_count(const IrProgram *prog, FILE *out, FILE *err) {
+  return write_module(prog, 1, out, err);
 }

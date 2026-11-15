@@ -9,5 +9,9 @@
 
 /* Writes the ES module of PROG. Returns 1, or 0 after a message on ERR. */
 int js_write(const IrProgram *prog, FILE *out, FILE *err);
+/* js_write in the count mode (Q-S8-32, `langc build PROG --js-count OUT.mjs`,
+   gate rows only): each statement adds its IR units to the counter OPS, and
+   the module exports OPS as $ops. */
+int js_write_count(const IrProgram *prog, FILE *out, FILE *err);
 
 #endif

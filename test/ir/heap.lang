@@ -1,0 +1,6 @@
+-- REFUSE_LOWER (Q-S8-3 N4): the heap of a Nat fold with a large trip
+-- count. The upTo 1000000000 form needs a heap of 3000000006 words. The
+-- module memory is static (N8), thus the build refuses. The upTo 7 form
+-- of this def builds.
+def big : (n : Nat) -> Option Nat :=
+  fun (n : Nat) => bind (upTo 1000000000 (fun (acc : Option Nat) => bind acc (fun (a : Nat) => natAdd a n)) (some 0) n) (fun (r : Option Nat) => r)

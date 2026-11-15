@@ -2094,6 +2094,18 @@ static const Value *tk_transfer_prove(Machine *m, const Value *const *a, uint32_
   return tk_list(m, w, TRW_PROOF_LEN);
 }
 
+/* The table of the transferVerify rows V for the lowering (lower.c jr_table, Q-S8-30): tk_rows, then tk_table, so
+   the lowered table is the host table. 2 when V is not closed (eval gives opaque), 0 on a bad table (eval gives
+   none), else 1 with *T and *NM set. */
+int eval_tr_table(const Machine *m, JrTable *t, uint32_t *nm, const Value *v) {
+  TkRows rows;
+  uint32_t cls[JR_C_MAX][2];
+  *nm = 0;
+  if (!tk_rows(m, &rows, v))
+    return 2;
+  return tk_table(m, t, cls, nm, &rows) ? 1 : 0;
+}
+
 /* transferVerify rows st proof (B3-6, D3): some flagYes only when
    transfer_verify and jointr_verify both pass; some flagNo on a failed
    check or a closed gate. A list that does not decode, a bad table and a

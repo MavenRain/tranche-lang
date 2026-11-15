@@ -12,9 +12,3 @@ examples/daokit.lang randWith
 examples/daokit.lang sigOk
 examples/daokit.lang slot
 examples/daokit.lang slotWith
-examples/onehot.lang rand
-examples/onehot.lang randWith
-examples/onehot.lang slot
-examples/onehot.lang slotWith
-examples/threshold.lang dleq
-examples/threshold.lang dleqWith
