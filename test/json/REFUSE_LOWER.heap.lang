@@ -1,0 +1,6 @@
+-- REFUSE_LOWER (Q-S8-3 N4, Q-S8-11): a Nat fold with the trip count
+-- 1000000000 needs a heap of 3000000006 words. The module memory is static
+-- (N8), and check --json lowers the program, thus it refuses the def. The
+-- fix gives the trip count 7.
+def big : (n : Nat) -> Option Nat :=
+  fun (n : Nat) => bind (upTo 1000000000 (fun (acc : Option Nat) => bind acc (fun (a : Nat) => natAdd a n)) (some 0) n) (fun (r : Option Nat) => r)

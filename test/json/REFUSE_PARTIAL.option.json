@@ -1,0 +1,1 @@
+{"diagnostics":[{"code":"REFUSE_PARTIAL","span":{"file":"test/json/REFUSE_PARTIAL.option.lang","line":4,"col":1,"end_line":4,"end_col":50},"message":"f: natAdd gives an Option, not a value of type Nat: take it apart with option or bind","fix":null}],"progress":{"parsed":1,"typed":0,"laws_discharged":0,"laws_total":0},"bounds":[],"fails":[],"tables":[]}

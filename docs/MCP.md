@@ -117,5 +117,5 @@ the exit status must be 0. The gate also runs `build/mcptool` on 3 bad
 inputs (a changed `.out`, a missing `.out` and no rows), and each must
 give exit 1. The gate rows are `mcp rows: 9 passed`,
 `mcp negatives: 3 of 3`, `mcp tools: 5 of 5` and
-`explain codes: 17 of 17` (`docs/host/README.md`, Gate;
+`explain codes: 19 of 19` (`docs/host/README.md`, Gate;
 `docs/VALIDATION.md`, V19).

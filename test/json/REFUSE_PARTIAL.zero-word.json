@@ -1,0 +1,1 @@
+{"diagnostics":[{"code":"REFUSE_PARTIAL","span":{"file":"test/json/REFUSE_PARTIAL.zero-word.lang","line":3,"col":1,"end_line":3,"end_col":39},"message":"q: the literal 0u is not a value of NonZero U256: use nonZero, which gives an Option","fix":null}],"progress":{"parsed":1,"typed":0,"laws_discharged":0,"laws_total":0},"bounds":[],"fails":[],"tables":[]}

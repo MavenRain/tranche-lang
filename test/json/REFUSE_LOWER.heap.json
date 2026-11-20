@@ -1,0 +1,1 @@
+{"diagnostics":[{"code":"REFUSE_LOWER","span":null,"message":"big: a heap of 3000000006 words does not lower (N4)","fix":null}],"progress":{"parsed":1,"typed":1,"laws_discharged":0,"laws_total":0},"bounds":[],"fails":[],"tables":[]}

@@ -1,0 +1,1 @@
+{"diagnostics":[{"code":"REFUSE_UNBOUNDED","span":{"file":"test/json/REFUSE_UNBOUNDED.open.lang","line":8,"col":1,"end_line":8,"end_col":81},"message":"table: rTable: R is not closed at a pair (h, k): some (unitsOf n); the table must be static (Q-S4-7)","fix":null}],"progress":{"parsed":3,"typed":2,"laws_discharged":0,"laws_total":0},"bounds":[],"fails":[],"tables":[]}

@@ -1,0 +1,3 @@
+-- REFUSE_PARTIAL (site 3): the divisor of mulDiv is a NonZero U256, and
+-- the literal 0u is not a value of that type. The fix gives the literal 2u.
+def q : Option U256 := mulDiv 6u 7u 0u

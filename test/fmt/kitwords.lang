@@ -1,0 +1,6 @@
+-- kitwords (S9): the checked kit words nonZero and nonZeroValue and the
+-- type NonZero. This layout is not canonical.
+def d : Option (NonZero Nat) :=   nonZero 2
+def v : Nat := nonZeroValue   5
+
+def q : Option Nat := map (fun (k : NonZero Nat) =>  natDiv 7 k) (nonZero 2)

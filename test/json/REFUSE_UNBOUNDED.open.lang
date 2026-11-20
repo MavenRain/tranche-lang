@@ -1,0 +1,8 @@
+-- REFUSE_UNBOUNDED (S4 C6, Q-S4-7): R n gives some (unitsOf n), and n is a
+-- parameter of table. Thus R n is not closed at a pair, and the table is
+-- not static. The fix gives the literal 1 for n.
+def C : Type 0 := Prod Status Status
+
+def R : Nat -> C -> C -> Option Units := fun (n : Nat) (h : C) (k : C) => some (unitsOf n)
+
+def table : Nat -> List (Prod (Prod C C) Units) := fun (n : Nat) => rTable (R n)

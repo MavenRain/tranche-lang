@@ -207,6 +207,11 @@ as a row:
   a closed def that reaches `zkKey` (ruling Q-S4-9). The row
   `REFUSE_TARGET_SECRET.holder` is a closed def that names the holder key
   mark `holderKey` (ruling Q-S5-4).
+  The 6 rows of S9 are `REFUSE_PARTIAL.option`, `REFUSE_PARTIAL.zero`,
+  `REFUSE_PARTIAL.zero-word`, `REFUSE_UNBOUNDED.open`,
+  `REFUSE_LOWER.heap` and `REFUSE_LOWER.rows`. Each is a row for one more
+  site that gives its code, and each runs with `--kit`, as the row of its
+  code does.
 - `X.json`: the expected line of the row X. `langc check --json` must give
   these bytes and write nothing on stderr.
 - `X.fix`: the FIXFILE of each refused row X. After `fronttool fix`,
@@ -237,3 +242,5 @@ To add a row X:
 
 At S4 C7 the gate prints `json rows: 33 passed`, `json refusal codes: 19
 of 19` and `json fixes: 28 passed`.
+At S9 the gate prints `json rows: 40 passed`, `json refusal codes: 19
+of 19` and `json fixes: 35 passed`.

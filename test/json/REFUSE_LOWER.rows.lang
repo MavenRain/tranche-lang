@@ -1,0 +1,18 @@
+-- REFUSE_LOWER (S8 C3, Q-S8-30): the rows of transferVerify come from an
+-- option on nonZero x, and x is the input of ask. Thus the rows term is
+-- not closed, and the lowering has no static table. The fix gives the
+-- closed def tableRows.
+def R : Claims -> Claims -> Option Units :=
+  fun (h : Claims) (k : Claims) => fold none (fold none (fold none (fold none (some (unitsOf 3)) (claimStatus k)) none (claimJuris k)) (claimStatus h)) none (claimJuris h)
+
+def table : List (Prod (Prod Claims Claims) Units) := rTable R
+
+def tableRows : Rows := rowsOf table
+
+def st : Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod CPoint (Prod Ct (Prod Ct (Prod Ct Ct))))))) :=
+  pair (pair 0x774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cbu 0xd984a032eb6b5e190243dd56d7b7b365372db1e2dff9d6a8301d74c9c953c61bu) (pair (pair 0xf28773c2d975288bc7d1d205c3748651b075fbc6610e58cddeeddf8f19405aa8u 0xab0902e8d880a89758212eb65cdaf473a1a06da521fa91f29b5cb52db03ed81u) (pair (pair 0xdefdea4cdb677750a420fee807eacf21eb9898ae79b9768766e4faa04a2d4a34u 0x4211ab0694635168e997b0ead2a93daeced1f4a04a95c0f6cfb199f69e56eb77u) (pair (pair 0x68be722985bb7117a67fcf53fd55c42d883362a870e880f3922ebbc72f457e0u 0x66727fd8f4c68bb26562e46518ad757955158abf5fddaf3f16bcf758f4378dadu) (pair (pair 0x4352f05ead1bba50972518e4819b7fd0edcdf0f19c1d5e1cc958d6fafab4d506u 0x57e06464fbae5db62723781d8fa16c23221fa5272f009438d506683c18847fdbu) (pair (ctOf (pair 0x2b4ea0a797a443d293ef5cff444f4979f06acfebd7e86d277475656138385b6cu 0x85e89bc037945d93b343083b5a1c86131a01f60c50269763b570c854e5c09b7au) (pair 0xb40226a37a1a586d0b360ad75ee73fabac67947361320882a8f9e0cfb9746eccu 0xf7ce91842e49e9d41f8d4a3e21ace4695226c0d3cf24c4af48e525620a13060cu)) (pair (ctOf (pair 0x2b4ea0a797a443d293ef5cff444f4979f06acfebd7e86d277475656138385b6cu 0x85e89bc037945d93b343083b5a1c86131a01f60c50269763b570c854e5c09b7au) (pair 0x69b47c7249439d23a5f3c28db17e60da861a483939a113e2d903e0547bb26bfbu 0x1a9cf6cd7c7ad92afd37e43c0d6230c643590d98e54e56780b08824df1978ea2u)) (pair (ctOf (pair 0x2b4ea0a797a443d293ef5cff444f4979f06acfebd7e86d277475656138385b6cu 0x85e89bc037945d93b343083b5a1c86131a01f60c50269763b570c854e5c09b7au) (pair 0xf5eaf4de39d745e72466597572a907ba5765395df8ed19d1457051461540ed0bu 0xa7018d958ba4757713e0b6652777c19e40fd4da8ea60b9c5e514ccab4ead8875u)) (ctOf (pair 0x62d14dab4150bf497402fdc45a215e10dcb01c354959b10cfe31c7e9d87ff33du 0x80fc06bd8cc5b01098088a1950eed0db01aa132967ab472235f5642483b25eafu) (pair 0x650471ae774265e3270b513233d12d850bb98e382a3b3af90cab6339e1446056u 0x838e779334aa6fe6cae90a62d359c339187b403215d97cda4e62724aa5a50306u)))))))))
+
+def nilWords : List U256 := nil
+
+def ask : U256 -> Option Flag :=
+  fun (x : U256) => transferVerify (option tableRows (fun (k : NonZero U256) => tableRows) (nonZero x)) st (pair (cons x nilWords) (pair nilWords (pair nilWords nilWords)))

@@ -1,0 +1,1 @@
+{"diagnostics":[{"code":"REFUSE_PARTIAL","span":{"file":"test/json/REFUSE_PARTIAL.zero.lang","line":4,"col":1,"end_line":4,"end_col":26},"message":"q: the literal 0 is not a value of NonZero Nat: use nonZero, which gives an Option","fix":null}],"progress":{"parsed":1,"typed":0,"laws_discharged":0,"laws_total":0},"bounds":[],"fails":[],"tables":[]}

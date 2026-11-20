@@ -1,0 +1,4 @@
+-- REFUSE_PARTIAL (S3 P5, Q-S3-1 (a), site 2): natAdd is a checked kit word.
+-- It gives an Option Nat, and the def wants a Nat. The fix gives x, a
+-- plain Nat.
+def f : Nat -> Nat := fun (x : Nat) => natAdd x 1

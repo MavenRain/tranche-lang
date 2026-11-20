@@ -1,0 +1,4 @@
+-- REFUSE_PARTIAL (S3 P2, Q-S3-8 (a), site 3): the divisor of natDiv is a
+-- NonZero Nat, and the literal 0 is not a value of that type. The fix
+-- gives the literal 2.
+def q : Nat := natDiv 7 0

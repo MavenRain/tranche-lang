@@ -1,0 +1,1 @@
+{"diagnostics":[{"code":"REFUSE_LOWER","span":null,"message":"ask: a transferVerify rows term that is not closed does not lower (HOST-LIMIT)","fix":null}],"progress":{"parsed":6,"typed":6,"laws_discharged":0,"laws_total":0},"bounds":[],"fails":[],"tables":[]}
